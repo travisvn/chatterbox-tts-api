@@ -5,7 +5,7 @@ description = "REST API for Chatterbox TTS with OpenAI compatibility"
 authors = [{ name = "Travis Van Nimwegen", email = "tts@travis2.com" }]
 readme = "README.md"
 license = { text = "AGPLv3" }
-requires-python = "~=3.11"
+requires-python = "~=3.11.0"
 dependencies = [
   # "chatterbox-tts @ git+https://github.com/resemble-ai/chatterbox.git",
   "chatterbox-tts @ git+https://github.com/travisvn/chatterbox-multilingual.git@exp",

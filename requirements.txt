@@ -3,6 +3,7 @@
 chatterbox-tts @ git+https://github.com/travisvn/chatterbox-multilingual.git@exp
 
 # Required for Chatterbox TTS watermarker functionality
+setuptools
 resemble-perth
 
 # PyTorch with CPU support (ensure CPU compatibility)

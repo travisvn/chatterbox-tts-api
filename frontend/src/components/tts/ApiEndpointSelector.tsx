@@ -13,10 +13,9 @@ export default function ApiEndpointSelector({ apiBaseUrl, onUrlChange }: ApiEndp
   const [tempUrl, setTempUrl] = useState(apiBaseUrl);
 
   // Detect environment for user info
-  const isDockerMode = typeof window !== 'undefined' &&
-    (window.location.port === '4321' ||
-      (window.location.port !== '4123' && window.location.port !== '3000' &&
-        window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1'));
+const isDockerMode = typeof window !== 'undefined' &&
+  window.location.hostname !== 'localhost' &&
+  window.location.hostname !== '127.0.0.1';
 
   const handleSave = () => {
     onUrlChange(tempUrl);
@@ -43,11 +42,9 @@ export default function ApiEndpointSelector({ apiBaseUrl, onUrlChange }: ApiEndp
           <div className="flex items-center gap-2">
             <Settings className="w-4 h-4 text-muted-foreground" />
             <span className="text-sm font-medium text-foreground">API Endpoint:</span>
-            {isDockerMode && (
-              <span className="text-xs bg-primary/10 text-primary px-2 py-1 rounded">
-                Docker Mode
-              </span>
-            )}
+            <span className={`text-xs px-2 py-1 rounded ${isDockerMode ? 'bg-primary/10 text-primary' : 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'}`}>
+              {isDockerMode ? 'Docker Mode' : 'Local Mode'}
+            </span>
           </div>
 
           {!isEditing ? (

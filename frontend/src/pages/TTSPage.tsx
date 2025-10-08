@@ -366,8 +366,9 @@ export default function TTSPage() {
     }
   };
 
-  // Determine if backend is ready for voice operations
-  const isBackendReady = voicesBackendReady && defaultVoiceBackendReady;
+  const isBackendReady = !!apiInfo; // If /info returned successfully, backend is ready
+// const isInitializing = !apiInfo; // If /info is not fetched yet, consider initializing
+
   const isInitializing = healthStatus === 'initializing' || health?.status === 'initializing';
 
   // Determine if generation is in progress (streaming, standard, or long text)
@@ -410,25 +411,29 @@ export default function TTSPage() {
           </div>
         </div>
 
-        {/* Backend Loading State */}
-        {(isInitializing || !isBackendReady) && (
-          <div className="w-full max-w-2xl mx-auto">
-            <div className="bg-primary/10 border border-primary/20 rounded-lg p-4 text-center">
-              <div className="flex items-center justify-center gap-2 mb-2">
-                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-primary"></div>
-                <span className="text-sm font-medium text-primary">
-                  {isInitializing ? 'Backend initializing...' : 'Loading voice library...'}
-                </span>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                {isInitializing
-                  ? 'TTS model is starting up. Voice library will load once ready.'
-                  : 'Connecting to voice library and loading default settings.'
-                }
-              </p>
-            </div>
-          </div>
-        )}
+{/* Backend Loading / Model State */}
+{(!isBackendReady || isInitializing) && (
+  <div className="w-full max-w-2xl mx-auto">
+    <div className="bg-yellow-100 border border-yellow-300 rounded-lg p-4 text-center">
+      <div className="flex items-center justify-center gap-2 mb-2">
+        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-yellow-600"></div>
+        <span className="text-sm font-medium text-yellow-700">
+          {isInitializing
+            ? 'Backend initializing...'
+            : 'Loading voice library...'
+          }
+        </span>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {isInitializing
+          ? 'TTS model is starting up. Voice library will load once ready.'
+          : 'Connecting to voice library and loading default settings.'
+        }
+      </p>
+    </div>
+  </div>
+)}
+
 
         <div className="w-full max-w-3xl mx-auto flex flex-col items-center justify-center gap-4">
 

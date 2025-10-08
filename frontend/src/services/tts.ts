@@ -237,7 +237,7 @@ export const createTTSService = (baseUrl: string, sessionId?: string) => ({
 
   // Voice library methods
   getVoices: async (): Promise<VoiceLibraryResponse> => {
-    const response = await fetch(`${baseUrl}/voices`);
+    const response = await fetch(`${baseUrl}/audio/voices`);
     if (!response.ok) {
       throw new Error(`Failed to fetch voices: ${response.status}`);
     }

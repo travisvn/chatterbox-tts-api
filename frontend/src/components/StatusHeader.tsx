@@ -62,7 +62,25 @@ export default function StatusHeader({
         subtitle: health.initialization_progress || 'Loading TTS model...'
       };
     }
+    // Handle unloaded but "ready" model
+    if (!health.model_loaded && health.initialization_state === 'ready') {
+      return {
+        color: 'text-yellow-600 dark:text-yellow-400',
+        icon: <AlertCircle className="w-4 h-4" />,
+        status: 'Ready',
+        subtitle: `${health.device} - Model is not loaded`
+      };
+    }
 
+    // Keep the old check for model still loading during initialization
+    if (!health.model_loaded && health.initialization_state !== 'ready') {
+      return {
+        color: 'text-yellow-600 dark:text-yellow-400',
+        icon: <AlertCircle className="w-4 h-4" />,
+        status: 'Model Loading',
+        subtitle: `${health.device} - initializing`
+      };
+    }
     if (health.initialization_state === 'error') {
       return {
         color: 'text-destructive',

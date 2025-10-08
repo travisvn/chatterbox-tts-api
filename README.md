@@ -1,15 +1,11 @@
-<p align="center">
-  <img src="https://lm17s1uz51.ufs.sh/f/EsgO8cDHBTOU5bjcd6giJaPhnlpTZysr24u6k9WGqwIjNgQo" alt="Chatterbox API TTS header">
-</p>
-
 # Chatterbox TTS API
 
 <p align="center">
-	<a href="https://github.com/travisvn/chatterbox-tts-api">
+	<a href="https://github.com/Prathat2006/chatterbox-tts-api">
 		<img src="https://img.shields.io/github/stars/travisvn/chatterbox-tts-api?style=social" alt="GitHub stars"></a>
-	<a href="https://github.com/travisvn/chatterbox-tts-api">
+	<a href="https://github.com/Prathat2006/chatterbox-tts-api">
 		<img alt="GitHub forks" src="https://img.shields.io/github/forks/travisvn/chatterbox-tts-api"></a>
-	<a href="https://github.com/travisvn/chatterbox-tts-api/issues">
+	<a href="https://github.com/Prathat2006/chatterbox-tts-api/issues">
 	  <img src="https://img.shields.io/github/issues/travisvn/chatterbox-tts-api" alt="GitHub issues"></a>
 	<img src="https://img.shields.io/github/last-commit/travisvn/chatterbox-tts-api?color=red" alt="GitHub last commit">
   <a href="http://chatterboxtts.com/discord">
@@ -34,7 +30,8 @@
 🎛️ **Parameter Control** - Real-time adjustment of speech characteristics  
 📚 **Auto Documentation** - Interactive API docs at `/docs` and `/redoc`  
 🔧 **Type Safety** - Full Pydantic validation for requests and responses  
-🧠 **Memory Management** - Advanced memory monitoring and automatic cleanup
+🧠 **Memory Management** - Advanced memory monitoring and automatic cleanup  
+🧠 **Model Auto Load/Unload** - Automatically loads/unloads models to save memory, unloads if idle for 60 seconds (change via .env)
 
 > [!IMPORTANT]
 > `resemble-ai/chatterbox` is currently broken for non-CUDA setups (see [chatterbox issues](https://github.com/resemble-ai/chatterbox/issues))
@@ -46,7 +43,7 @@
 ## ⚡️ Quick Start
 
 ```bash
-git clone https://github.com/travisvn/chatterbox-tts-api
+git clone https://github.com/Prathat2006/chatterbox-tts-api.git
 cd chatterbox-tts-api
 uv sync
 uv run main.py
@@ -61,7 +58,7 @@ uv run main.py
 
 ```bash
 # Clone the repository
-git clone https://github.com/travisvn/chatterbox-tts-api
+git clone https://github.com/Prathat2006/chatterbox-tts-api.git
 cd chatterbox-tts-api
 
 # Install uv if you haven't already
@@ -85,7 +82,7 @@ uv run main.py
 
 ```bash
 # Clone the repository
-git clone https://github.com/travisvn/chatterbox-tts-api
+git clone https://github.com/Prathat2006/chatterbox-tts-api.git
 cd chatterbox-tts-api
 
 # Setup environment — using Python 3.11
@@ -109,11 +106,11 @@ python main.py
 
 > Ran into issues? Check the [troubleshooting section](https://github.com/travisvn/chatterbox-tts-api?tab=readme-ov-file#common-issues)
 
-### 🐳 Docker (Recommended)
+### 🐳 Docker
 
 ```bash
 # Clone and start with Docker Compose
-git clone https://github.com/travisvn/chatterbox-tts-api
+git clone https://github.com/Prathat2006/chatterbox-tts-api.git
 cd chatterbox-tts-api
 
 # Use Docker-optimized environment variables
@@ -188,6 +185,7 @@ Build the frontend for production deployment:
 ```bash
 cd frontend && npm install && npm run build
 ```
+After build api Automatically serve the builded frontend with the api and can access on save url as backend.
 
 You can then access it directly from your local file system at `/dist/index.html`.
 
@@ -331,6 +329,7 @@ curl -X POST http://localhost:4123/v1/audio/speech \
 - 🔄 **Configurable** - Enable/disable with `USE_MULTILINGUAL_MODEL` environment variable
 - 📚 **Voice Library Integration** - Language badges and filtering in web UI
 - 🧠 **Smart Fallback** - Defaults to English for backward compatibility
+- ⚙️ **Auto-load/Unload** - Now support Auto loading or unloading the model to save memory automatically load model when requested is genrated or can manually load model from frontend
 
 **📚 [Complete Multilingual Documentation →](docs/MULTILINGUAL.md)**
 
@@ -592,7 +591,7 @@ Key environment variables (see the example files for full list):
 | `TEMPERATURE`            | `0.8`                | Sampling randomness (0.05-5.0) |
 | `VOICE_SAMPLE_PATH`      | `./voice-sample.mp3` | Voice sample for cloning       |
 | `DEVICE`                 | `auto`               | Device (auto/cuda/mps/cpu)     |
-
+| `MODEL_IDLE_TIMEOUT`     | `60`                 | Idle timeout to unload model       |
 <details>
 <summary><strong>🎭 Voice Cloning</strong></summary>
 
@@ -891,7 +890,7 @@ uv run uvicorn app.main:app --host 0.0.0.0 --port 4123
 ```bash
 # With pip
 pip uninstall torch torchvision torchaudio
-pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+pip install torch==2.8.0 torchvision==0.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
 pip install git+https://github.com/travisvn/chatterbox-multilingual.git@exp
 
 # With uv (handles this automatically)
@@ -901,7 +900,7 @@ uv sync
 **Windows Users**, using pip & having issues:
 
 ```bash
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 --force-reinstall
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128 --force-reinstall
 pip install --force-reinstall typing_extensions
 ```
 
@@ -1122,4 +1121,4 @@ To use Chatterbox TTS API with Open WebUI, follow these steps:
   <img src="https://lm17s1uz51.ufs.sh/f/EsgO8cDHBTOUjUe3QjHytHQ0xqn2CishmXgGfeJ4o983TUMO" alt="Settings to integrate Chatterbox TTS API with Open WebUI" />
 </p>
 
-### ➡️ View the [Open WebUI docs for installing Chatterbox TTS API](https://docs.openwebui.com/tutorials/text-to-speech/chatterbox-tts-api-integration)
+### ➡️ View the [Open WebUI docs for installing Chatterbox TTS API](https://docs.openwebui.com/tutorials/text-to-speech/chatterbox-tts-api-integration

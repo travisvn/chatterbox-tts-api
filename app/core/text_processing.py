@@ -3,7 +3,7 @@ Text processing utilities for TTS
 - Robust sentence splitting (abbrev/decimals/quotes/ellipses), bullet handling, non-verbal cues
 - TTS-friendly normalization baked in (°, ℃/℉/K, primes, %, currencies, fractions, ellipses, µ/Ω, per-slash, etc.)
 - Enhanced with ordinal/roman numeral/time normalization, performance optimizations, and robust error handling.
-- Uses `num2words` library if available for superior number-to-word conversion.
+- Uses `num2words` library if available for superior number-to-word conversion with fallback support
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from app.models.long_text import LongTextChunk
 logger = logging.getLogger(__name__)
 
 # =============================================================================
-#              DEPENDENCY: num2words
+#              OPTIONAL DEPENDENCY: num2words
 # =============================================================================
 try:
     from num2words import num2words
@@ -36,33 +36,34 @@ _URL_RE = re.compile(r"""(?P<url>(?:(?:https?|ftp)://)[^\s<>'"()]+)""", re.IGNOR
 _EMAIL_RE = re.compile(r"""(?P<email>\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b)""", re.VERBOSE)
 _ELLIPSIS_RE = re.compile(r"\u2026")  # …
 _MANUAL_ELLIPSIS_RE = re.compile(r"(?<!\.)\.\.\.(?!\.)") # ...
-_TEMP_C_RE = re.compile(r"(?P<val>-?\d+(?:\.\d+)?)\s*(?:°\s*C|℃)\b", re.IGNORECASE)
-_TEMP_F_RE = re.compile(r"(?P<val>-?\d+(?:\.\d+)?)\s*(?:°\s*F|℉)\b", re.IGNORECASE)
-_TEMP_K_RE = re.compile(r"(?P<val>-?\d+(?:\.\d+)?)\s*K\b")
-_DEGREE_RE = re.compile(r"(?P<deg>\d+(?:\.\d+)?)\s*°(?!\s*[CFcf])")
+_TEMP_C_RE = re.compile(r"(?P<val>-?[\d,]+(?:\.\d+)?)\s*(?:°\s*C|℃)\b", re.IGNORECASE)
+_TEMP_F_RE = re.compile(r"(?P<val>-?[\d,]+(?:\.\d+)?)\s*(?:°\s*F|℉)\b", re.IGNORECASE)
+_TEMP_K_RE = re.compile(r"(?P<val>-?[\d,]+(?:\.\d+)?)\s*K\b")
+_DEGREE_RE = re.compile(r"(?P<deg>[\d,]+(?:\.\d+)?)\s*°(?!\s*[CFcf])")
 _DMS_LONG_RE = re.compile(r"(?P<d>\d{1,3})\s*°\s*(?P<m>\d{1,2})\s*[′']\s*(?P<s>\d{1,2})\s*[″\"]\s*(?P<h>[NSEW])?", re.IGNORECASE)
 _DMS_SHORT_RE = re.compile(r"(?P<d>\d{1,3})\s*°\s*(?P<m>\d{1,2})\s*[′']\s*(?P<h>[NSEW])?", re.IGNORECASE)
 _FEET_INCHES_RE = re.compile(r"(?P<ft>\d{1,2})\s*[′']\s*(?P<in>\d{1,2})\s*[″\"]\b")
 _FEET_RE = re.compile(r"(?P<ft>\d{1,2})\s*[′']\b")
 _INCHES_RE = re.compile(r"(?P<inch>\d{1,2})\s*[″\"]\b")
-_PERCENT_RE = re.compile(r"(?P<val>-?\d+(?:\.\d+)?)\s*%")
-_PERMILLE_RE = re.compile(r"(?P<val>-?\d+(?:\.\d+)?)\s*‰")
-_BASIS_PTS_RE = re.compile(r"(?P<val>-?\d+(?:\.\d+)?)\s*‱")
-_CURRENCY_PRE_RE = re.compile(r"(?<!\w)(?P<sym>[$€£¥₹₩₦₽₪])\s?(?P<amt>\d[\d.,]*)")
-_CURRENCY_POST_RE = re.compile(r"(?P<amt>\d[\d.,]*)\s?(?P<sym>[€£¥₹₩₦₽₪])\b")
+_PERCENT_RE = re.compile(r"(?P<val>-?[\d,]+(?:\.\d+)?)\s*%")
+_PERMILLE_RE = re.compile(r"(?P<val>-?[\d,]+(?:\.\d+)?)\s*‰")
+_BASIS_PTS_RE = re.compile(r"(?P<val>-?[\d,]+(?:\.\d+)?)\s*‱")
+_CURRENCY_PRE_RE = re.compile(r"(?<!\w)(?P<sym>[$€£¥₹₩₦₽₪])\s?(?P<amt>[\d,]+(?:\.\d+)?)")
+_CURRENCY_POST_RE = re.compile(r"(?P<amt>[\d,]+(?:\.\d+)?)\s?(?P<sym>[€£¥₹₩₦₽₪])\b")
 _AMPERSAND_RE = re.compile(r"(?<=\w)\s*&\s*(?=\w)")
-_MICRO_UNITS_RE = re.compile(r"(?P<num>\d+(?:\.\d+)?)\s*[µμ]\s?(?P<u>[A-Za-z]+)\b")
-_KILOOHM_RE = re.compile(r"(?P<num>\d+(?:\.\d+)?)\s*kΩ\b", re.IGNORECASE)
-_MEGAOHM_RE = re.compile(r"(?P<num>\d+(?:\.\d+)?)\s*MΩ\b", re.IGNORECASE)
-_OHM_RE = re.compile(r"(?P<num>\d+(?:\.\d+)?)\s*Ω\b")
+_MICRO_UNITS_RE = re.compile(r"(?P<num>[\d,]+(?:\.\d+)?)\s*[µμ]\s?(?P<u>[A-Za-z]+)\b")
+_KILOOHM_RE = re.compile(r"(?P<num>[\d,]+(?:\.\d+)?)\s*kΩ\b", re.IGNORECASE)
+_MEGAOHM_RE = re.compile(r"(?P<num>[\d,]+(?:\.\d+)?)\s*MΩ\b", re.IGNORECASE)
+_OHM_RE = re.compile(r"(?P<num>[\d,]+(?:\.\d+)?)\s*Ω\b")
 _PER_SLASH_RE = re.compile(r"\b(?P<a>[A-Za-z]{1,6})\s*/\s*(?P<b>[A-Za-z]{1,6})\b")
-_HASHTAG_NUM_RE = re.compile(r"#(?P<num>\d+)\b")
+_HASHTAG_NUM_RE = re.compile(r"#(?P<num>[\d,]+)\b")
 _HASHTAG_TAG_RE = re.compile(r"#(?P<tag>[A-Za-z_][A-Za-z0-9_]*)")
 _MENTION_RE = re.compile(r"@(?P<user>[A-Za-z0-9_]{2,})\b")
 _ORDINAL_RE = re.compile(r"\b(\d+)(st|nd|rd|th)\b")
 _TIME_12H_RE = re.compile(r"\b(\d{1,2}):(\d{2})\s*([AP]M)\b", re.IGNORECASE)
 _TIME_24H_RE = re.compile(r"\b([01]?\d|2[0-3]):([0-5]\d)\b")
 _ROMAN_NUMERAL_RE = re.compile(r"\b(X|IX|IV|V?I{0,3})\b") # Common cases up to 10
+_FORMATTED_NUMBER_RE = re.compile(r'\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b')
 _WHITESPACE_RE = re.compile(r"\s{2,}")
 
 # =============================================================================
@@ -109,36 +110,69 @@ def _unmask(text: str, mapping: Dict[str, str], *, read_urls: bool) -> str:
             text = text.replace(key, val)
     return text
 
-def _sp(number: str) -> str:
-    """Removes '.0' from a number string if present."""
-    return number[:-2] if number.endswith(".0") else number
-
 def _pluralize(unit: str, value: str) -> str:
     """Pluralizes a unit based on the numeric value."""
     try:
-        v = float(value.replace(",", ""))
+        clean_value = value.replace(",", "")
+        v = float(clean_value)
     except (ValueError, AttributeError) as e:
         logger.warning(f"Could not parse value for pluralization: {value}. Details: {e}")
         return unit
     return unit if abs(v) == 1 else unit + "s"
 
-def _number_to_words(n: int) -> str:
-    """Converts an integer to its English word representation, using num2words if available."""
-    if _NUM2WORDS_AVAILABLE:
-        return num2words(n)
+def _verbalize_number(num_str: str) -> str:
+    """Converts a number string (with optional commas and decimals) to words."""
+    if not num_str:
+        return ""
     
-    # Fallback implementation
-    if n < 0: return f"minus {_number_to_words(abs(n))}"
-    if n == 0: return "zero"
-    ones = ["", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"]
-    teens = ["ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"]
-    tens = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"]
-    if 1 <= n < 10: return ones[n]
-    if 10 <= n < 20: return teens[n - 10]
-    if 20 <= n < 100: return tens[n // 10] + (" " + ones[n % 10] if n % 10 else "")
-    if 100 <= n < 1000: return ones[n // 100] + " hundred" + (" " + _number_to_words(n % 100) if n % 100 else "")
-    logger.warning(f"Basic number to words fallback cannot handle: {n}")
-    return str(n)
+    clean_num_str = num_str.replace(',', '')
+    
+    try:
+        # Handle decimals
+        if '.' in clean_num_str:
+            integer_part, decimal_part = clean_num_str.split('.', 1)
+            if _NUM2WORDS_AVAILABLE:
+                return f"{num2words(int(integer_part))} point {' '.join(num2words(int(c)) for c in decimal_part)}"
+            else:
+                # Fallback for decimals
+                return f"{_verbalize_number(integer_part)} point {' '.join(_verbalize_number(c) for c in decimal_part)}"
+
+        # Handle integers
+        num = int(clean_num_str)
+        if _NUM2WORDS_AVAILABLE:
+            return num2words(num)
+        
+        # Enhanced fallback implementation
+        if num < 0: return f"minus {_verbalize_number(str(abs(num)))}"
+        if num < 1000:
+            if num == 0: return "zero"
+            ones = ["", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"]
+            teens = ["ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"]
+            tens = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"]
+            if 1 <= num < 10: return ones[num]
+            if 10 <= num < 20: return teens[num - 10]
+            if 20 <= num < 100: return tens[num // 10] + (" " + ones[num % 10] if num % 10 else "")
+            if 100 <= num < 1000: return ones[num // 100] + " hundred" + (" " + _verbalize_number(str(num % 100)) if num % 100 else "")
+        
+        if num < 1_000_000:
+            thousands = num // 1000
+            remainder = num % 1000
+            result = f"{_verbalize_number(str(thousands))} thousand"
+            if remainder: result += f" {_verbalize_number(str(remainder))}"
+            return result
+        
+        if num < 1_000_000_000:
+            millions = num // 1_000_000
+            remainder = num % 1_000_000
+            result = f"{_verbalize_number(str(millions))} million"
+            if remainder: result += f" {_verbalize_number(str(remainder))}"
+            return result
+
+        logger.warning(f"Basic number to words fallback cannot handle: {num_str}")
+        return clean_num_str
+
+    except (ValueError, AttributeError):
+        return num_str
 
 def normalize_for_tts(
     text: str,
@@ -158,41 +192,41 @@ def normalize_for_tts(
     s = _MANUAL_ELLIPSIS_RE.sub(", ", s)
 
     # Temperature (°C/℉), Kelvin
-    s = _TEMP_C_RE.sub(lambda m: f"{_sp(m.group('val'))} degrees Celsius", s)
-    s = _TEMP_F_RE.sub(lambda m: f"{_sp(m.group('val'))} degrees Fahrenheit", s)
-    s = _TEMP_K_RE.sub(lambda m: f"{_sp(m.group('val'))} kelvins", s)
+    s = _TEMP_C_RE.sub(lambda m: f"{_verbalize_number(m.group('val'))} degrees Celsius", s)
+    s = _TEMP_F_RE.sub(lambda m: f"{_verbalize_number(m.group('val'))} degrees Fahrenheit", s)
+    s = _TEMP_K_RE.sub(lambda m: f"{_verbalize_number(m.group('val'))} kelvins", s)
 
     # Bare degree (angles)
-    s = _DEGREE_RE.sub(lambda m: f"{_sp(m.group('deg'))} degrees", s)
+    s = _DEGREE_RE.sub(lambda m: f"{_verbalize_number(m.group('deg'))} degrees", s)
 
-    # DMS angles & primes (also feet/inches)
+    # DMS angles & primes (these typically don't use large numbers with commas)
     def repl_dms(m):
         deg, minutes, seconds, hemi = m.group("d"), m.group("m"), m.group("s"), m.group("h")
-        parts = [f"{_sp(deg)} degrees"]
-        if minutes: parts.append(f"{_sp(minutes)} minutes")
-        if seconds: parts.append(f"{_sp(seconds)} seconds")
+        parts = [f"{_verbalize_number(deg)} degrees"]
+        if minutes: parts.append(f"{_verbalize_number(minutes)} minutes")
+        if seconds: parts.append(f"{_verbalize_number(seconds)} seconds")
         if hemi:    parts.append(hemi.strip())
         return " ".join(parts)
 
     s = _DMS_LONG_RE.sub(repl_dms, s)
     s = _DMS_SHORT_RE.sub(
-        lambda m: f"{_sp(m.group('d'))} degrees {_sp(m.group('m'))} minutes" + (f" {m.group('h')}" if m.group('h') else ""),
+        lambda m: f"{_verbalize_number(m.group('d'))} degrees {_verbalize_number(m.group('m'))} minutes" + (f" {m.group('h')}" if m.group('h') else ""),
         s
     )
 
     # Heights 5′10″ / 5'10"
     s = _FEET_INCHES_RE.sub(
-        lambda m: f"{_sp(m.group('ft'))} {_pluralize('foot', m.group('ft'))} "
-                  f"{_sp(m.group('in'))} {_pluralize('inch', m.group('in'))}",
+        lambda m: f"{_verbalize_number(m.group('ft'))} {_pluralize('foot', m.group('ft'))} "
+                  f"{_verbalize_number(m.group('in'))} {_pluralize('inch', m.group('in'))}",
         s
     )
-    s = _FEET_RE.sub(lambda m: f"{_sp(m.group('ft'))} {_pluralize('foot', m.group('ft'))}", s)
-    s = _INCHES_RE.sub(lambda m: f"{_sp(m.group('inch'))} {_pluralize('inch', m.group('inch'))}", s)
+    s = _FEET_RE.sub(lambda m: f"{_verbalize_number(m.group('ft'))} {_pluralize('foot', m.group('ft'))}", s)
+    s = _INCHES_RE.sub(lambda m: f"{_verbalize_number(m.group('inch'))} {_pluralize('inch', m.group('inch'))}", s)
 
     # Percent / permille / basis points
-    s = _PERCENT_RE.sub(lambda m: f"{_sp(m.group('val'))} percent", s)
-    s = _PERMILLE_RE.sub(lambda m: f"{_sp(m.group('val'))} per mille", s)
-    s = _BASIS_PTS_RE.sub(lambda m: f"{_sp(m.group('val'))} basis points", s)
+    s = _PERCENT_RE.sub(lambda m: f"{_verbalize_number(m.group('val'))} percent", s)
+    s = _PERMILLE_RE.sub(lambda m: f"{_verbalize_number(m.group('val'))} per mille", s)
+    s = _BASIS_PTS_RE.sub(lambda m: f"{_verbalize_number(m.group('val'))} basis points", s)
 
     # Currencies
     _CURRENCY_NAMES = {
@@ -200,11 +234,11 @@ def normalize_for_tts(
         "₩": "won", "₦": "naira", "₽": "ruble", "₪": "shekel",
     }
     s = _CURRENCY_PRE_RE.sub(
-        lambda m: f"{m.group('amt')} {_pluralize(_CURRENCY_NAMES.get(m.group('sym'), 'currency'), m.group('amt'))}",
+        lambda m: f"{_verbalize_number(m.group('amt'))} {_pluralize(_CURRENCY_NAMES.get(m.group('sym'), 'currency'), m.group('amt'))}",
         s
     )
     s = _CURRENCY_POST_RE.sub(
-        lambda m: f"{m.group('amt')} {_pluralize(_CURRENCY_NAMES.get(m.group('sym'), 'currency'), m.group('amt'))}",
+        lambda m: f"{_verbalize_number(m.group('amt'))} {_pluralize(_CURRENCY_NAMES.get(m.group('sym'), 'currency'), m.group('amt'))}",
         s
     )
 
@@ -228,12 +262,12 @@ def normalize_for_tts(
         if _NUM2WORDS_AVAILABLE:
             return num2words(num, to='ordinal')
         # Fallback logic for ordinals
-        if 11 <= num % 100 <= 13: return f"{_number_to_words(num)}th"
+        if 11 <= num % 100 <= 13: return f"{_verbalize_number(str(num))}th"
         last_digit = num % 10
-        if last_digit == 1: return f"{_number_to_words(num)}st"
-        if last_digit == 2: return f"{_number_to_words(num)}nd"
-        if last_digit == 3: return f"{_number_to_words(num)}rd"
-        return f"{_number_to_words(num)}th"
+        if last_digit == 1: return f"{_verbalize_number(str(num))}st"
+        if last_digit == 2: return f"{_verbalize_number(str(num))}nd"
+        if last_digit == 3: return f"{_verbalize_number(str(num))}rd"
+        return f"{_verbalize_number(str(num))}th"
     s = _ORDINAL_RE.sub(repl_ordinal, s)
 
     # Time formats (process 12h with AM/PM first, then ambiguous/24h)
@@ -241,21 +275,24 @@ def normalize_for_tts(
         hour, minute, ampm = int(m.group(1)), int(m.group(2)), m.group(3).upper()
         if hour == 12 and minute == 0 and ampm == 'PM': return "noon"
         if hour == 12 and minute == 0 and ampm == 'AM': return "midnight"
-        h_word = _number_to_words(hour)
-        m_word = "o'clock" if minute == 0 else f"oh {_number_to_words(minute)}" if minute < 10 else _number_to_words(minute)
+        h_word = _verbalize_number(str(hour))
+        m_word = "o'clock" if minute == 0 else f"oh {_verbalize_number(str(minute))}" if minute < 10 else _verbalize_number(str(minute))
         return f"{h_word} {m_word} {' '.join(list(ampm))}"
 
     def repl_time_24h(m):
         hour, minute = int(m.group(1)), int(m.group(2))
         if hour == 0 and minute == 0: return "midnight"
         if hour == 12 and minute == 0: return "noon"
-        h_word = _number_to_words(hour)
+        h_word = _verbalize_number(str(hour))
         if minute == 0: return f"{h_word} hundred hours"
-        m_word = f"oh {_number_to_words(minute)}" if minute < 10 else _number_to_words(minute)
+        m_word = f"oh {_verbalize_number(str(minute))}" if minute < 10 else _verbalize_number(str(minute))
         return f"{h_word} {m_word}"
 
     s = _TIME_12H_RE.sub(repl_time_12h, s)
     s = _TIME_24H_RE.sub(repl_time_24h, s)
+    
+    # Standalone formatted numbers (run this after specific unit handlers)
+    s = _FORMATTED_NUMBER_RE.sub(lambda m: _verbalize_number(m.group(0)), s)
 
     # Roman numerals (common cases)
     _ROMAN_MAP = {"I": "one", "II": "two", "III": "three", "IV": "four", "V": "five",
@@ -272,16 +309,16 @@ def normalize_for_tts(
     s = re.sub(r"¶\s*", "paragraph ", s)
 
     # µ/μ + units, Ω/kΩ/MΩ
-    s = _MICRO_UNITS_RE.sub(lambda m: f"{_sp(m.group('num'))} micro{m.group('u')}", s)
-    s = _KILOOHM_RE.sub(lambda m: f"{_sp(m.group('num'))} kiloohms", s)
-    s = _MEGAOHM_RE.sub(lambda m: f"{_sp(m.group('num'))} megaohms", s)
-    s = _OHM_RE.sub(lambda m: f"{_sp(m.group('num'))} ohms", s)
+    s = _MICRO_UNITS_RE.sub(lambda m: f"{_verbalize_number(m.group('num'))} micro{m.group('u')}", s)
+    s = _KILOOHM_RE.sub(lambda m: f"{_verbalize_number(m.group('num'))} kiloohms", s)
+    s = _MEGAOHM_RE.sub(lambda m: f"{_verbalize_number(m.group('num'))} megaohms", s)
+    s = _OHM_RE.sub(lambda m: f"{_verbalize_number(m.group('num'))} ohms", s)
 
     # unit per slash (URLs are masked)
     s = _PER_SLASH_RE.sub(lambda m: f"{m.group('a')} per {m.group('b')}", s)
 
     # hashtags & mentions
-    s = _HASHTAG_NUM_RE.sub(lambda m: f"number {m.group('num')}", s)
+    s = _HASHTAG_NUM_RE.sub(lambda m: f"number {_verbalize_number(m.group('num'))}", s)
     s = _HASHTAG_TAG_RE.sub(lambda m: f"hashtag {m.group('tag')}", s)
     s = _MENTION_RE.sub(lambda m: f"at {m.group('user')}", s)
 
@@ -858,15 +895,12 @@ def validate_long_text_input(text: str) -> Tuple[bool, str]:
 #
 # For comprehensive testing, consider unit tests for:
 # - `normalize_for_tts`:
-#   - Each specific pattern (e.g., "5°C", "$10.50", "v1.2.3", "5'10\"", "1st", "IV", "3:30 PM", "14:45").
-#   - URLs and emails being correctly masked and unmasked.
-#   - Complex strings combining multiple patterns.
+#   - Each specific pattern (e.g., "$1,250,000", "15,000 ft", "2,000 °C").
+#   - Standalone numbers like "The population is 2,345,678."
+#   - Decimal handling in `_verbalize_number`.
 # - `_advanced_split_into_sentences`:
 #   - Sentences ending with abbreviations vs. true ends (e.g., "Mr. Smith vs. the world.").
 #   - Text with bullet points, numbered lists, and non-verbal cues.
-#   - Nested quotes and complex punctuation.
 # - Chunking functions (`split_text_into_chunks`, `split_text_for_long_generation`):
-#   - Boundary conditions where text length is exactly `max_length`.
-#   - Correct handling of very long sentences or words.
-#   - Overlap logic in `_find_best_split_point` to ensure no data loss or infinite loops.
+#   - Boundary conditions and overlap logic.
 #

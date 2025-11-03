@@ -12,7 +12,8 @@ Text processing utilities for TTS
 - Splits sentences at headline-style colons for natural pauses.
 - Includes phonetic hints, scientific notation, chemical formulas, and other advanced edge cases.
 - Verbalizes appended symbols like in "OPEC+".
-- Converts parentheticals to comma-separated clauses for improved prosody.
+- Converts parentheticals, em-dashes, and semicolons to comma-separated clauses for improved prosody.
+- Expands common symbols like 'vs.', '>', '<', '~' and mathematical operators (±, ×, ÷, ≈, ≠, ≤, ≥) for more natural speech.
 """
 
 from __future__ import annotations
@@ -64,6 +65,8 @@ _URL_RE = re.compile(r"""(?P<url>(?:(?:https?|ftp)://)[^\s<>'"()]+)""", re.IGNOR
 _EMAIL_RE = re.compile(r"""(?P<email>\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b)""", re.VERBOSE)
 _ELLIPSIS_RE = re.compile(r"\u2026")  # …
 _MANUAL_ELLIPSIS_RE = re.compile(r"(?<!\.)\.\.\.(?!\.)") # ...
+_DASHES_RE = re.compile(r"[—–]") # Em-dash, En-dash
+_SEMICOLON_RE = re.compile(r";")
 _TEMP_C_RE = re.compile(r"(?P<val>-?[\d,]+(?:\.\d+)?)\s*(?:°\s*C|℃)\b", re.IGNORECASE)
 _TEMP_F_RE = re.compile(r"(?P<val>-?[\d,]+(?:\.\d+)?)\s*(?:°\s*F|℉)\b", re.IGNORECASE)
 _TEMP_K_RE = re.compile(r"(?P<val>-?[\d,]+(?:\.\d+)?)\s*K\b")
@@ -79,8 +82,9 @@ _BASIS_PTS_RE = re.compile(r"(?P<val>-?[\d,]+(?:\.\d+)?)\s*ⱀ")
 _CURRENCY_MAGNITUDE_RE = re.compile(r"(?P<sym>[$€£¥₹₩₦₽₪])\s?(?P<amt>[\d,]+(?:\.\d+)?)\s*(?P<mag>million|billion|trillion)\b", re.IGNORECASE)
 _CURRENCY_PRE_RE = re.compile(r"(?<!\w)(?P<sym>[$€£¥₹₩₦₽₪])\s?(?P<amt>[\d,]+(?:\.\d+)?)(?!\s*(?:million|billion|trillion)\b)", re.IGNORECASE)
 _CURRENCY_POST_RE = re.compile(r"(?P<amt>[\d,]+(?:\.\d+)?)\s?(?P<sym>[€£¥₹₩₦₽₪])\b")
-_AMPERSAND_RE = re.compile(r"(?<=\w)\s*&\s*(?=\w)")
+_AMPERSAND_RE = re.compile(r"\s*&\s*")
 _WORD_PLUS_RE = re.compile(r"\b([A-Z][a-zA-Z0-9]*)\+(?!\w)")
+_POSSESSIVE_S_RE = re.compile(r"(\b\d{4})'s\b") # e.g. 1980's
 _MICRO_UNITS_RE = re.compile(r"(?P<num>[\d,]+(?:\.\d+)?)\s*[µμ]\s?(?P<u>[A-Za-z]+)\b")
 _KILOOHM_RE = re.compile(r"(?P<num>[\d,]+(?:\.\d+)?)\s*kΩ\b", re.IGNORECASE)
 _MEGAOHM_RE = re.compile(r"(?P<num>[\d,]+(?:\.\d+)?)\s*MΩ\b", re.IGNORECASE)
@@ -101,6 +105,9 @@ _PARENS_ACRONYM_RE = re.compile(r"\s+\(([A-Z]{2,6})\)")
 _SCIENTIFIC_NOTATION_RE = re.compile(r"\b([\d\.]+)\s?[xXeE]\s?10\^([\d\.\-]+)\b", re.IGNORECASE)
 _US_PHONE_RE = re.compile(r"\b\(?(\d{3})\)?[\s.-]?(\d{3})[\s.-]?(\d{4})\b")
 _CHEM_FORMULA_RE = re.compile(r"\b([A-Z][a-z]?)(\d+)\b")
+_VS_RE = re.compile(r"\b(vs\.?|v\.?)\b", re.IGNORECASE)
+_RELATIONAL_RE = re.compile(r"\s*([<>])\s*")
+_APPROX_RE = re.compile(r"~\s*")
 _WHITESPACE_RE = re.compile(r"\s{2,}")
 _COMMA_CLEANUP_RE = re.compile(r"(\s*,\s*){2,}")
 
@@ -116,6 +123,20 @@ _TIMEZONES = {
     "UTC": "Coordinated Universal Time", "GMT": "Greenwich Mean Time",
 }
 _TIMEZONE_RE = re.compile(r"\b(" + "|".join(_TIMEZONES.keys()) + r")\b", re.IGNORECASE)
+
+# Expanded unit patterns
+_MPH_RE = re.compile(r"(?P<val>[\d,]+(?:\.\d+)?)\s*mph\b", re.IGNORECASE)
+_KPH_RE = re.compile(r"(?P<val>[\d,]+(?:\.\d+)?)\s*kph\b", re.IGNORECASE)
+_INHG_RE = re.compile(r"(?P<val>[\d,]+(?:\.\d+)?)\s*inHg\b", re.IGNORECASE)
+_MB_RE = re.compile(r"(?P<val>[\d,]+(?:\.\d+)?)\s*mb\b", re.IGNORECASE)
+
+# Mathematical operators
+_MATH_OPS = {
+    "±": " plus or minus ", "×": " times ", "÷": " divided by ",
+    "≈": " is approximately equal to ", "≠": " is not equal to ",
+    "≤": " is less than or equal to ", "≥": " is greater than or equal to "
+}
+
 
 # =============================================================================
 #                               NORMALIZATION
@@ -183,10 +204,10 @@ def _verbalize_number(num_str: str, to_year: bool = False) -> str:
         # Handle decimals
         if '.' in clean_num_str:
             integer_part, decimal_part = clean_num_str.split('.', 1)
-            if _NUM2WORDS_AVAILABLE:
-                return f"{num2words(int(integer_part))} point {' '.join(num2words(int(c)) for c in decimal_part)}"
-            else:
-                return f"{_verbalize_number(integer_part)} point {' '.join(_verbalize_number(c) for c in decimal_part)}"
+            integer_words = _verbalize_number(integer_part) if integer_part and integer_part != '0' else "zero"
+            if not integer_part: integer_words = "zero" # Handles cases like ".5"
+            decimal_words = ' '.join(_verbalize_number(c) for c in decimal_part)
+            return f"{integer_words} point {decimal_words}"
 
         num = int(clean_num_str)
         
@@ -257,14 +278,16 @@ def normalize_for_tts(
     # Apply phonetic hints first to override any other rules
     s = _PHONETIC_RE.sub(lambda m: _PHONETIC_HINTS_UPPER[m.group(1).upper()], s)
 
+    # Prosody improvements: dashes, semicolons, ellipses -> commas
+    s = _DASHES_RE.sub(", ", s)
+    s = _SEMICOLON_RE.sub(", ", s)
+    s = _ELLIPSIS_RE.sub(", ", s)
+    s = _MANUAL_ELLIPSIS_RE.sub(", ", s)
+
     # Chemical formulas and subscripts
     _SUBSCRIPT_MAP = {'₀':'0', '₁':'1', '₂':'2', '₃':'3', '₄':'4', '₅':'5', '₆':'6', '₇':'7', '₈':'8', '₉':'9'}
     s = "".join(_SUBSCRIPT_MAP.get(c, c) for c in s)
     s = _CHEM_FORMULA_RE.sub(lambda m: f"{m.group(1)} {_verbalize_number(m.group(2))}", s)
-
-    # Ellipses
-    s = _ELLIPSIS_RE.sub(", ", s)
-    s = _MANUAL_ELLIPSIS_RE.sub(", ", s)
 
     # Temperature (°C/℉), Kelvin
     s = _TEMP_C_RE.sub(lambda m: f"{_verbalize_number(m.group('val'))} degrees Celsius", s)
@@ -273,6 +296,16 @@ def normalize_for_tts(
 
     # Bare degree (angles)
     s = _DEGREE_RE.sub(lambda m: f"{_verbalize_number(m.group('deg'))} degrees", s)
+    
+    # Specific units (mph, inHg, etc.)
+    s = _MPH_RE.sub(lambda m: f"{_verbalize_number(m.group('val'))} miles per hour", s)
+    s = _KPH_RE.sub(lambda m: f"{_verbalize_number(m.group('val'))} kilometers per hour", s)
+    s = _INHG_RE.sub(lambda m: f"{_verbalize_number(m.group('val'))} inches of mercury", s)
+    s = _MB_RE.sub(lambda m: f"{_verbalize_number(m.group('val'))} millibars", s)
+
+    # Mathematical operators
+    for op, spoken in _MATH_OPS.items():
+        s = s.replace(op, spoken)
 
     # DMS angles & primes
     def repl_dms(m):
@@ -324,6 +357,9 @@ def normalize_for_tts(
     s = _DATE_FULL_RE.sub(lambda m: f"{m.group(1)} {_to_ordinal_word(int(m.group(2)))} {_verbalize_number(m.group(3), to_year=True)}", s)
     s = _ORDINAL_RE.sub(lambda m: _to_ordinal_word(int(m.group(1))), s)
     s = _DATE_MONTH_DAY_RE.sub(lambda m: f"{m.group(1)} {_to_ordinal_word(int(m.group(2)))}", s)
+    
+    # Handle possessives on years, e.g. 1980's -> nineteen eighties
+    s = _POSSESSIVE_S_RE.sub(lambda m: f"{_verbalize_number(m.group(1), to_year=True)}s", s)
 
     # Time, timezones, and ranges
     def repl_time_12h(m):
@@ -361,8 +397,10 @@ def normalize_for_tts(
     # Ampersand and other symbols
     s = _AMPERSAND_RE.sub(" and ", s)
     s = _WORD_PLUS_RE.sub(lambda m: f"{m.group(1)} plus", s)
-    s = re.sub(r"^\s*&\s*(?=\w)", "and ", s); s = re.sub(r"(?<=\w)\s*&\s*$", " and", s)
-
+    s = _VS_RE.sub(" versus ", s)
+    s = _APPROX_RE.sub("about ", s)
+    s = _RELATIONAL_RE.sub(lambda m: f" { 'greater than' if m.group(1) == '>' else 'less than' } ", s)
+    
     # Section/Paragraph signs
     s = re.sub(r"§\s*", "section ", s); s = re.sub(r"¶\s*", "paragraph ", s)
 

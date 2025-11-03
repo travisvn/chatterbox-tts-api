@@ -11,7 +11,7 @@ Text processing utilities for TTS
 - Handles full dates ("November 3, 2025") as a single unit for natural prosody.
 - Splits sentences at headline-style colons for natural pauses.
 - Includes phonetic hints, scientific notation, chemical formulas, and other advanced edge cases.
-- Verbalizes appended symbols like in "Disney+".
+- Verbalizes appended symbols like in "OPEC+".
 - Converts parentheticals to comma-separated clauses for improved prosody.
 """
 
@@ -396,6 +396,8 @@ def normalize_for_tts(
 
     # Final cleanup
     s = _COMMA_CLEANUP_RE.sub(", ", s) # Clean up duplicate commas from parenthesis replacement
+    s = re.sub(r"^,\s*", "", s)       # Remove leading comma
+    s = re.sub(r"\s*,$", "", s)       # Remove trailing comma
     s = _WHITESPACE_RE.sub(" ", s).strip()
     s = _unmask(s, maskmap, read_urls=read_urls)
     return s

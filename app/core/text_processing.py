@@ -3,7 +3,16 @@ Text processing utilities for TTS
 - Robust sentence splitting (abbrev/decimals/quotes/ellipses), bullet handling, non-verbal cues
 - TTS-friendly normalization baked in (°, ℃/℉/K, primes, %, currencies, fractions, ellipses, µ/Ω, per-slash, etc.)
 - Enhanced with ordinal/roman numeral/time normalization, performance optimizations, and robust error handling.
-- Uses `num2words` library if available for superior number-to-word conversion with fallback support
+- Uses `num2words` library if available for superior number-to-word conversion.
+- Correctly verbalizes large, comma-formatted numbers and handles parenthetical content gracefully.
+- Intelligently handles monetary values with magnitude words (e.g., "$4.65 billion").
+- Expands common timezone abbreviations (e.g., "ET" -> "Eastern Time").
+- Normalizes dates ("November 4" -> "November fourth") and number ranges ("2018-2019" -> "2018 to 2019").
+- Handles full dates ("November 3, 2025") as a single unit for natural prosody.
+- Splits sentences at headline-style colons for natural pauses.
+- Includes phonetic hints, scientific notation, chemical formulas, and other advanced edge cases.
+- Verbalizes appended symbols like in "Disney+".
+- Converts parentheticals to comma-separated clauses for improved prosody.
 """
 
 from __future__ import annotations
@@ -11,6 +20,7 @@ import gc
 import logging
 import re
 from typing import List, Optional, Tuple, Set, Dict
+from functools import lru_cache
 
 import torch
 from app.config import Config
@@ -24,9 +34,27 @@ logger = logging.getLogger(__name__)
 try:
     from num2words import num2words
     _NUM2WORDS_AVAILABLE = True
+    logger.info("num2words library found. Using advanced number-to-word conversion.")
 except ImportError:
     _NUM2WORDS_AVAILABLE = False
     logger.info("num2words library not found. Falling back to basic number-to-words conversion.")
+
+# =============================================================================
+#              CUSTOMIZATION: PHONETIC HINTS
+# =============================================================================
+# Add custom pronunciations for acronyms, jargon, or brand names.
+# Keys are case-insensitive and treated as whole words.
+PHONETIC_HINTS = {
+    "SQL": "sequel",
+    "GIF": "jiff",
+    "NGINX": "engine-x",
+    "LLM": "L L M",
+    "API": "A P I",
+}
+# Pre-process hints for regex
+_PHONETIC_HINTS_UPPER = {k.upper(): v for k, v in PHONETIC_HINTS.items()}
+_PHONETIC_RE = re.compile(r"\b(" + "|".join(_PHONETIC_HINTS_UPPER.keys()) + r")\b", re.IGNORECASE)
+
 
 # =============================================================================
 #              PERFORMANCE: PRE-COMPILED REGEX PATTERNS
@@ -47,10 +75,12 @@ _FEET_RE = re.compile(r"(?P<ft>\d{1,2})\s*[′']\b")
 _INCHES_RE = re.compile(r"(?P<inch>\d{1,2})\s*[″\"]\b")
 _PERCENT_RE = re.compile(r"(?P<val>-?[\d,]+(?:\.\d+)?)\s*%")
 _PERMILLE_RE = re.compile(r"(?P<val>-?[\d,]+(?:\.\d+)?)\s*‰")
-_BASIS_PTS_RE = re.compile(r"(?P<val>-?[\d,]+(?:\.\d+)?)\s*‱")
-_CURRENCY_PRE_RE = re.compile(r"(?<!\w)(?P<sym>[$€£¥₹₩₦₽₪])\s?(?P<amt>[\d,]+(?:\.\d+)?)")
+_BASIS_PTS_RE = re.compile(r"(?P<val>-?[\d,]+(?:\.\d+)?)\s*ⱀ")
+_CURRENCY_MAGNITUDE_RE = re.compile(r"(?P<sym>[$€£¥₹₩₦₽₪])\s?(?P<amt>[\d,]+(?:\.\d+)?)\s*(?P<mag>million|billion|trillion)\b", re.IGNORECASE)
+_CURRENCY_PRE_RE = re.compile(r"(?<!\w)(?P<sym>[$€£¥₹₩₦₽₪])\s?(?P<amt>[\d,]+(?:\.\d+)?)(?!\s*(?:million|billion|trillion)\b)", re.IGNORECASE)
 _CURRENCY_POST_RE = re.compile(r"(?P<amt>[\d,]+(?:\.\d+)?)\s?(?P<sym>[€£¥₹₩₦₽₪])\b")
 _AMPERSAND_RE = re.compile(r"(?<=\w)\s*&\s*(?=\w)")
+_WORD_PLUS_RE = re.compile(r"\b([A-Z][a-zA-Z0-9]*)\+(?!\w)")
 _MICRO_UNITS_RE = re.compile(r"(?P<num>[\d,]+(?:\.\d+)?)\s*[µμ]\s?(?P<u>[A-Za-z]+)\b")
 _KILOOHM_RE = re.compile(r"(?P<num>[\d,]+(?:\.\d+)?)\s*kΩ\b", re.IGNORECASE)
 _MEGAOHM_RE = re.compile(r"(?P<num>[\d,]+(?:\.\d+)?)\s*MΩ\b", re.IGNORECASE)
@@ -60,11 +90,32 @@ _HASHTAG_NUM_RE = re.compile(r"#(?P<num>[\d,]+)\b")
 _HASHTAG_TAG_RE = re.compile(r"#(?P<tag>[A-Za-z_][A-Za-z0-9_]*)")
 _MENTION_RE = re.compile(r"@(?P<user>[A-Za-z0-9_]{2,})\b")
 _ORDINAL_RE = re.compile(r"\b(\d+)(st|nd|rd|th)\b")
-_TIME_12H_RE = re.compile(r"\b(\d{1,2}):(\d{2})\s*([AP]M)\b", re.IGNORECASE)
+_TIME_12H_RE = re.compile(r"\b(\d{1,2}):(\d{2})\s*([AP]\.?M\.?)\b", re.IGNORECASE)
 _TIME_24H_RE = re.compile(r"\b([01]?\d|2[0-3]):([0-5]\d)\b")
+_YEAR_RANGE_RE = re.compile(r"\b(\d{4})\s?[–-]\s?(\d{4})\b")
+_NUMBER_RANGE_RE = re.compile(r"\b(\d+)\s?[–-]\s?(\d+)\b")
 _ROMAN_NUMERAL_RE = re.compile(r"\b(X|IX|IV|V?I{0,3})\b") # Common cases up to 10
 _FORMATTED_NUMBER_RE = re.compile(r'\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b')
+_SIMPLE_NUMBER_RE = re.compile(r'\b\d+\b')
+_PARENS_ACRONYM_RE = re.compile(r"\s+\(([A-Z]{2,6})\)")
+_SCIENTIFIC_NOTATION_RE = re.compile(r"\b([\d\.]+)\s?[xXeE]\s?10\^([\d\.\-]+)\b", re.IGNORECASE)
+_US_PHONE_RE = re.compile(r"\b\(?(\d{3})\)?[\s.-]?(\d{3})[\s.-]?(\d{4})\b")
+_CHEM_FORMULA_RE = re.compile(r"\b([A-Z][a-z]?)(\d+)\b")
 _WHITESPACE_RE = re.compile(r"\s{2,}")
+_COMMA_CLEANUP_RE = re.compile(r"(\s*,\s*){2,}")
+
+_MONTH_NAMES = r"January|February|March|April|May|June|July|August|September|October|November|December"
+_DATE_FULL_RE = re.compile(fr"\b({_MONTH_NAMES})\s+(\d{{1,2}})(?:st|nd|rd|th)?,\s+(\d{{4}})\b", re.IGNORECASE)
+_DATE_MONTH_DAY_RE = re.compile(fr"\b({_MONTH_NAMES})\s+(\d{{1,2}})(?!st|nd|rd|th)\b", re.IGNORECASE)
+
+_TIMEZONES = {
+    "ET": "Eastern Time", "EST": "Eastern Standard Time", "EDT": "Eastern Daylight Time",
+    "CT": "Central Time", "CST": "Central Standard Time", "CDT": "Central Daylight Time",
+    "MT": "Mountain Time", "MST": "Mountain Standard Time", "MDT": "Mountain Daylight Time",
+    "PT": "Pacific Time", "PST": "Pacific Standard Time", "PDT": "Pacific Daylight Time",
+    "UTC": "Coordinated Universal Time", "GMT": "Greenwich Mean Time",
+}
+_TIMEZONE_RE = re.compile(r"\b(" + "|".join(_TIMEZONES.keys()) + r")\b", re.IGNORECASE)
 
 # =============================================================================
 #                               NORMALIZATION
@@ -120,8 +171,9 @@ def _pluralize(unit: str, value: str) -> str:
         return unit
     return unit if abs(v) == 1 else unit + "s"
 
-def _verbalize_number(num_str: str) -> str:
-    """Converts a number string (with optional commas and decimals) to words."""
+@lru_cache(maxsize=1024)
+def _verbalize_number(num_str: str, to_year: bool = False) -> str:
+    """Converts a number string to words, with special handling for years. Cached for performance."""
     if not num_str:
         return ""
     
@@ -134,15 +186,18 @@ def _verbalize_number(num_str: str) -> str:
             if _NUM2WORDS_AVAILABLE:
                 return f"{num2words(int(integer_part))} point {' '.join(num2words(int(c)) for c in decimal_part)}"
             else:
-                # Fallback for decimals
                 return f"{_verbalize_number(integer_part)} point {' '.join(_verbalize_number(c) for c in decimal_part)}"
 
-        # Handle integers
         num = int(clean_num_str)
-        if _NUM2WORDS_AVAILABLE:
-            return num2words(num)
         
-        # Enhanced fallback implementation
+        if _NUM2WORDS_AVAILABLE:
+            return num2words(num, to='year' if to_year else 'cardinal')
+        
+        # Fallback implementation
+        if to_year and 1000 <= num <= 2999:
+            if num % 100 == 0 and num % 1000 != 0: return f"{_verbalize_number(str(num//100))} hundred"
+            return f"{_verbalize_number(str(num//100))} {_verbalize_number(str(num%100))}"
+
         if num < 0: return f"minus {_verbalize_number(str(abs(num)))}"
         if num < 1000:
             if num == 0: return "zero"
@@ -174,6 +229,18 @@ def _verbalize_number(num_str: str) -> str:
     except (ValueError, AttributeError):
         return num_str
 
+def _to_ordinal_word(num: int) -> str:
+    """Converts an integer to its ordinal word form."""
+    if _NUM2WORDS_AVAILABLE:
+        return num2words(num, to='ordinal')
+    # Fallback logic
+    if 11 <= num % 100 <= 13: return f"{_verbalize_number(str(num))}th"
+    last_digit = num % 10
+    if last_digit == 1: return f"{_verbalize_number(str(num))}st"
+    if last_digit == 2: return f"{_verbalize_number(str(num))}nd"
+    if last_digit == 3: return f"{_verbalize_number(str(num))}rd"
+    return f"{_verbalize_number(str(num))}th"
+
 def normalize_for_tts(
     text: str,
     *,
@@ -186,6 +253,14 @@ def normalize_for_tts(
         return text
 
     s, maskmap = _mask(text)
+    
+    # Apply phonetic hints first to override any other rules
+    s = _PHONETIC_RE.sub(lambda m: _PHONETIC_HINTS_UPPER[m.group(1).upper()], s)
+
+    # Chemical formulas and subscripts
+    _SUBSCRIPT_MAP = {'₀':'0', '₁':'1', '₂':'2', '₃':'3', '₄':'4', '₅':'5', '₆':'6', '₇':'7', '₈':'8', '₉':'9'}
+    s = "".join(_SUBSCRIPT_MAP.get(c, c) for c in s)
+    s = _CHEM_FORMULA_RE.sub(lambda m: f"{m.group(1)} {_verbalize_number(m.group(2))}", s)
 
     # Ellipses
     s = _ELLIPSIS_RE.sub(", ", s)
@@ -199,7 +274,7 @@ def normalize_for_tts(
     # Bare degree (angles)
     s = _DEGREE_RE.sub(lambda m: f"{_verbalize_number(m.group('deg'))} degrees", s)
 
-    # DMS angles & primes (these typically don't use large numbers with commas)
+    # DMS angles & primes
     def repl_dms(m):
         deg, minutes, seconds, hemi = m.group("d"), m.group("m"), m.group("s"), m.group("h")
         parts = [f"{_verbalize_number(deg)} degrees"]
@@ -207,7 +282,6 @@ def normalize_for_tts(
         if seconds: parts.append(f"{_verbalize_number(seconds)} seconds")
         if hemi:    parts.append(hemi.strip())
         return " ".join(parts)
-
     s = _DMS_LONG_RE.sub(repl_dms, s)
     s = _DMS_SHORT_RE.sub(
         lambda m: f"{_verbalize_number(m.group('d'))} degrees {_verbalize_number(m.group('m'))} minutes" + (f" {m.group('h')}" if m.group('h') else ""),
@@ -229,84 +303,68 @@ def normalize_for_tts(
     s = _BASIS_PTS_RE.sub(lambda m: f"{_verbalize_number(m.group('val'))} basis points", s)
 
     # Currencies
-    _CURRENCY_NAMES = {
-        "$": "dollar", "€": "euro", "£": "pound", "¥": "yen", "₹": "rupee",
-        "₩": "won", "₦": "naira", "₽": "ruble", "₪": "shekel",
-    }
-    s = _CURRENCY_PRE_RE.sub(
-        lambda m: f"{_verbalize_number(m.group('amt'))} {_pluralize(_CURRENCY_NAMES.get(m.group('sym'), 'currency'), m.group('amt'))}",
-        s
-    )
-    s = _CURRENCY_POST_RE.sub(
-        lambda m: f"{_verbalize_number(m.group('amt'))} {_pluralize(_CURRENCY_NAMES.get(m.group('sym'), 'currency'), m.group('amt'))}",
-        s
-    )
+    _CURRENCY_NAMES = {"$": "dollar", "€": "euro", "£": "pound", "¥": "yen", "₹": "rupee", "₩": "won", "₦": "naira", "₽": "ruble", "₪": "shekel"}
+    def repl_currency_magnitude(m):
+        amount = _verbalize_number(m.group('amt'))
+        magnitude = m.group('mag').lower()
+        currency_name = _CURRENCY_NAMES.get(m.group('sym'), 'currency')
+        pluralized_currency = _pluralize(currency_name, "2") # The amount is > 1
+        return f"{amount} {magnitude} {pluralized_currency}"
+    s = _CURRENCY_MAGNITUDE_RE.sub(repl_currency_magnitude, s)
+    s = _CURRENCY_PRE_RE.sub(lambda m: f"{_verbalize_number(m.group('amt'))} {_pluralize(_CURRENCY_NAMES.get(m.group('sym'), 'currency'), m.group('amt'))}", s)
+    s = _CURRENCY_POST_RE.sub(lambda m: f"{_verbalize_number(m.group('amt'))} {_pluralize(_CURRENCY_NAMES.get(m.group('sym'), 'currency'), m.group('amt'))}", s)
 
     # Unicode fractions
-    _FRACTIONS = {
-        "½": "one half", "⅓": "one third", "⅔": "two thirds", "¼": "one quarter", "¾": "three quarters",
-        "⅛": "one eighth", "⅜": "three eighths", "⅝": "five eighths", "⅞": "seven eighths",
-        "⅕": "one fifth", "⅖": "two fifths", "⅗": "three fifths", "⅘": "four fifths",
-        "⅙": "one sixth", "⅚": "five sixths", "⅐": "one seventh", "⅑": "one ninth", "⅒": "one tenth",
-    }
+    _FRACTIONS = {"½": "one half", "⅓": "one third", "⅔": "two thirds", "¼": "one quarter", "¾": "three quarters", "⅛": "one eighth", "⅜": "three eighths", "⅝": "five eighths", "⅞": "seven eighths", "⅕": "one fifth", "⅖": "two fifths", "⅗": "three fifths", "⅘": "four fifths", "⅙": "one sixth", "⅚": "five sixths", "⅐": "one seventh", "⅑": "one ninth", "⅒": "one tenth"}
     s = "".join(_FRACTIONS.get(ch, ch) for ch in s)
-
     if convert_ascii_fractions:
-        s = re.sub(r"\b1/2\b", "one half", s)
-        s = re.sub(r"\b1/4\b", "one quarter", s)
-        s = re.sub(r"\b3/4\b", "three quarters", s)
+        s = re.sub(r"\b1/2\b", "one half", s); s = re.sub(r"\b1/4\b", "one quarter", s); s = re.sub(r"\b3/4\b", "three quarters", s)
 
-    # Ordinal numbers
-    def repl_ordinal(m):
-        num = int(m.group(1))
-        if _NUM2WORDS_AVAILABLE:
-            return num2words(num, to='ordinal')
-        # Fallback logic for ordinals
-        if 11 <= num % 100 <= 13: return f"{_verbalize_number(str(num))}th"
-        last_digit = num % 10
-        if last_digit == 1: return f"{_verbalize_number(str(num))}st"
-        if last_digit == 2: return f"{_verbalize_number(str(num))}nd"
-        if last_digit == 3: return f"{_verbalize_number(str(num))}rd"
-        return f"{_verbalize_number(str(num))}th"
-    s = _ORDINAL_RE.sub(repl_ordinal, s)
+    # Dates and ordinals (most specific rule first)
+    s = _DATE_FULL_RE.sub(lambda m: f"{m.group(1)} {_to_ordinal_word(int(m.group(2)))} {_verbalize_number(m.group(3), to_year=True)}", s)
+    s = _ORDINAL_RE.sub(lambda m: _to_ordinal_word(int(m.group(1))), s)
+    s = _DATE_MONTH_DAY_RE.sub(lambda m: f"{m.group(1)} {_to_ordinal_word(int(m.group(2)))}", s)
 
-    # Time formats (process 12h with AM/PM first, then ambiguous/24h)
+    # Time, timezones, and ranges
     def repl_time_12h(m):
-        hour, minute, ampm = int(m.group(1)), int(m.group(2)), m.group(3).upper()
-        if hour == 12 and minute == 0 and ampm == 'PM': return "noon"
-        if hour == 12 and minute == 0 and ampm == 'AM': return "midnight"
-        h_word = _verbalize_number(str(hour))
-        m_word = "o'clock" if minute == 0 else f"oh {_verbalize_number(str(minute))}" if minute < 10 else _verbalize_number(str(minute))
-        return f"{h_word} {m_word} {' '.join(list(ampm))}"
-
+        hour, minute, ampm = int(m.group(1)), int(m.group(2)), m.group(3)
+        ampm_spoken = " ".join(list(ampm.replace('.','').upper()))
+        if hour == 12 and minute == 0 and 'PM' in ampm_spoken: return "noon"
+        if hour == 12 and minute == 0 and 'AM' in ampm_spoken: return "midnight"
+        h_word = _verbalize_number(str(hour)); m_word = "o'clock" if minute == 0 else f"oh {_verbalize_number(str(minute))}" if minute < 10 else _verbalize_number(str(minute))
+        return f"{h_word} {m_word} {ampm_spoken}"
     def repl_time_24h(m):
         hour, minute = int(m.group(1)), int(m.group(2))
         if hour == 0 and minute == 0: return "midnight"
         if hour == 12 and minute == 0: return "noon"
-        h_word = _verbalize_number(str(hour))
+        h_word = _verbalize_number(str(hour)); m_word = f"oh {_verbalize_number(str(minute))}" if minute < 10 else _verbalize_number(str(minute))
         if minute == 0: return f"{h_word} hundred hours"
-        m_word = f"oh {_verbalize_number(str(minute))}" if minute < 10 else _verbalize_number(str(minute))
         return f"{h_word} {m_word}"
-
     s = _TIME_12H_RE.sub(repl_time_12h, s)
     s = _TIME_24H_RE.sub(repl_time_24h, s)
+    s = _TIMEZONE_RE.sub(lambda m: _TIMEZONES[m.group(1).upper()], s)
+    s = _YEAR_RANGE_RE.sub(lambda m: f"{_verbalize_number(m.group(1), to_year=True)} to {_verbalize_number(m.group(2), to_year=True)}", s)
+    s = _NUMBER_RANGE_RE.sub(lambda m: f"{_verbalize_number(m.group(1))} to {_verbalize_number(m.group(2))}", s)
     
-    # Standalone formatted numbers (run this after specific unit handlers)
+    # Other complex patterns
+    s = _SCIENTIFIC_NOTATION_RE.sub(lambda m: f"{_verbalize_number(m.group(1))} times ten to the power of {_verbalize_number(m.group(2))}", s)
+    s = _US_PHONE_RE.sub(lambda m: " ".join([_verbalize_number(c) for c in f"{m.group(1)}{m.group(2)}{m.group(3)}"]), s)
+
+    # Standalone numbers
     s = _FORMATTED_NUMBER_RE.sub(lambda m: _verbalize_number(m.group(0)), s)
+    s = _SIMPLE_NUMBER_RE.sub(lambda m: _verbalize_number(m.group(0)), s) # Catch numbers missed by other rules
 
     # Roman numerals (common cases)
-    _ROMAN_MAP = {"I": "one", "II": "two", "III": "three", "IV": "four", "V": "five",
-                  "VI": "six", "VII": "seven", "VIII": "eight", "IX": "nine", "X": "ten"}
+    _ROMAN_MAP = {"I": "one", "II": "two", "III": "three", "IV": "four", "V": "five", "VI": "six", "VII": "seven", "VIII": "eight", "IX": "nine", "X": "ten"}
     s = _ROMAN_NUMERAL_RE.sub(lambda m: _ROMAN_MAP.get(m.group(1), m.group(1)), s)
 
-    # Ampersand between words
+    # Ampersand and other symbols
     s = _AMPERSAND_RE.sub(" and ", s)
-    s = re.sub(r"^\s*&\s*(?=\w)", "and ", s)
-    s = re.sub(r"(?<=\w)\s*&\s*$", " and", s)
+    s = _WORD_PLUS_RE.sub(lambda m: f"{m.group(1)} plus", s)
+    s = re.sub(r"^\s*&\s*(?=\w)", "and ", s); s = re.sub(r"(?<=\w)\s*&\s*$", " and", s)
 
     # Section/Paragraph signs
-    s = re.sub(r"§\s*", "section ", s)
-    s = re.sub(r"¶\s*", "paragraph ", s)
+    s = re.sub(r"§\s*", "section ", s); s = re.sub(r"¶\s*", "paragraph ", s)
 
     # µ/μ + units, Ω/kΩ/MΩ
     s = _MICRO_UNITS_RE.sub(lambda m: f"{_verbalize_number(m.group('num'))} micro{m.group('u')}", s)
@@ -318,8 +376,12 @@ def normalize_for_tts(
     s = _PER_SLASH_RE.sub(lambda m: f"{m.group('a')} per {m.group('b')}", s)
 
     # hashtags & mentions
+    def repl_hashtag(m):
+        tag = m.group('tag')
+        spoken_tag = re.sub(r'([A-Z])', r' \1', tag).strip()
+        return f"hashtag {spoken_tag}"
     s = _HASHTAG_NUM_RE.sub(lambda m: f"number {_verbalize_number(m.group('num'))}", s)
-    s = _HASHTAG_TAG_RE.sub(lambda m: f"hashtag {m.group('tag')}", s)
+    s = _HASHTAG_TAG_RE.sub(repl_hashtag, s)
     s = _MENTION_RE.sub(lambda m: f"at {m.group('user')}", s)
 
     # TM / R / ©
@@ -328,6 +390,12 @@ def normalize_for_tts(
     else:
         s = s.replace("™", "").replace("®", "").replace("©", "")
 
+    # Handle parentheses for prosody
+    s = _PARENS_ACRONYM_RE.sub(lambda m: ", " + " ".join(list(m.group(1))) + ",", s)
+    s = s.replace("(", ", ").replace(")", ", ")
+
+    # Final cleanup
+    s = _COMMA_CLEANUP_RE.sub(", ", s) # Clean up duplicate commas from parenthesis replacement
     s = _WHITESPACE_RE.sub(" ", s).strip()
     s = _unmask(s, maskmap, read_urls=read_urls)
     return s
@@ -337,32 +405,19 @@ def normalize_for_tts(
 #                           ADVANCED SPLITTING
 # =============================================================================
 
-# To add custom abbreviations, extend this set:
-# e.g., ABBREVIATIONS.add("fig.")
-ABBREVIATIONS: Set[str] = {
-    "mr.", "mrs.", "ms.", "dr.", "prof.", "rev.", "hon.", "st.", "etc.", "e.g.", "i.e.",
-    "vs.", "approx.", "apt.", "dept.", "fig.", "gen.", "gov.", "inc.", "jr.", "sr.", "ltd.",
-    "no.", "p.", "pp.", "vol.", "op.", "cit.", "ca.", "cf.", "ed.", "esp.", "et.", "al.",
-    "ibid.", "id.", "inf.", "sup.", "viz.", "sc.", "fl.", "d.", "b.", "r.", "c.", "v.",
-    "u.s.", "u.k.", "a.m.", "p.m.", "a.d.", "b.c.",
-}
+ABBREVIATIONS: Set[str] = {"mr.", "mrs.", "ms.", "dr.", "prof.", "rev.", "hon.", "st.", "etc.", "e.g.", "i.e.", "vs.", "approx.", "apt.", "dept.", "fig.", "gen.", "gov.", "inc.", "jr.", "sr.", "ltd.", "no.", "p.", "pp.", "vol.", "op.", "cit.", "ca.", "cf.", "ed.", "esp.", "et.", "al.", "ibid.", "id.", "inf.", "sup.", "viz.", "sc.", "fl.", "d.", "b.", "r.", "c.", "v.", "u.s.", "u.k.", "a.m.", "p.m.", "a.d.", "b.c."}
 TITLES_NO_PERIOD: Set[str] = {"mr", "mrs", "ms", "dr", "prof", "rev", "hon", "st", "sgt", "capt", "lt", "col", "gen"}
-
 NUMBER_DOT_NUMBER_PATTERN = re.compile(r"(?<!\d\.)\d*\.\d+")
 VERSION_PATTERN = re.compile(r"[vV]?\d+(?:\.\d+)+")
-POTENTIAL_END_PATTERN = re.compile(r'([.!?])(["\'”’)]?)(\s+|$)')
+POTENTIAL_END_PATTERN = re.compile(r'([.!?:]|(?<=\w):)(["\'”’)]?)(\s+|$)')
 BULLET_POINT_PATTERN = re.compile(r"(?:^|\n)\s*(?:[-•*]|\d+\.)\s+")
-NON_VERBAL_CUE_PATTERN = re.compile(r"(\([\w\s'-]+\))")
 UNICODE_ELLIPSIS = "…"
 
 def _is_valid_sentence_end(text: str, period_index: int) -> bool:
     """Determines if a period marks a true sentence end."""
-    # Ignore ellipses
     if (period_index > 0 and text[period_index - 1] == ".") or \
        (period_index + 1 < len(text) and text[period_index + 1] == "."):
         return False
-
-    # Check for abbreviations
     word_start = period_index - 1
     scan_limit = max(0, period_index - 20)
     while word_start >= scan_limit and not text[word_start].isspace():
@@ -370,18 +425,12 @@ def _is_valid_sentence_end(text: str, period_index: int) -> bool:
     word_with_dot = text[word_start + 1: period_index + 1].lower()
     if word_with_dot in ABBREVIATIONS:
         return False
-
-    # Check for numbers like "3.14" or versions "v1.2"
-    context_start = max(0, period_index - 20)
-    context_end = min(len(text), period_index + 20)
+    context_start = max(0, period_index - 20); context_end = min(len(text), period_index + 20)
     context = text[context_start:context_end]
     rel_idx = period_index - context_start
-
     for pattern in (NUMBER_DOT_NUMBER_PATTERN, VERSION_PATTERN):
         for m in pattern.finditer(context):
             if m.start() <= rel_idx < m.end():
-                # This is a number/version; only a sentence end if it's the last char
-                # AND followed by a space or end-of-string.
                 is_last_char = (rel_idx == m.end() - 1)
                 is_followed_by_space_or_eos = (period_index + 1 == len(text) or text[period_index + 1].isspace())
                 if not (is_last_char and is_followed_by_space_or_eos):
@@ -390,517 +439,288 @@ def _is_valid_sentence_end(text: str, period_index: int) -> bool:
 
 def _split_text_by_punctuation(text: str) -> List[str]:
     """Splits text based on punctuation, respecting abbreviations and numbers."""
-    sentences: List[str] = []
-    last_split = 0
-    n = len(text)
-
-    # Handle Unicode ellipsis first as a hard separator
+    sentences: List[str] = []; last_split = 0
     i = 0
-    while i < n:
+    while i < len(text):
         if text[i] == UNICODE_ELLIPSIS:
             j = i + 1
-            if j >= n or text[j].isspace():
+            if j >= len(text) or text[j].isspace():
                 seg = text[last_split:j].strip()
-                if seg:
-                    sentences.append(seg)
+                if seg: sentences.append(seg)
                 last_split = j
             i += 1
             continue
         i += 1
-
-    # Main sentence splitting logic
     for m in POTENTIAL_END_PATTERN.finditer(text):
-        punc_idx = m.start(1)
-        punc = text[punc_idx]
+        punc_idx = m.start(1); punc = text[punc_idx]
         cut_after = m.start(1) + 1 + (len(m.group(2)) if m.group(2) else 0)
-
         if punc in ("!", "?"):
             seg = text[last_split:cut_after].strip()
-            if seg:
-                sentences.append(seg)
+            if seg: sentences.append(seg)
             last_split = m.end()
             continue
-
         if punc == ".":
             if _is_valid_sentence_end(text, punc_idx):
                 seg = text[last_split:cut_after].strip()
-                if seg:
-                    sentences.append(seg)
+                if seg: sentences.append(seg)
                 last_split = m.end()
-
+        if punc == ":":
+            next_char_index = m.end()
+            if next_char_index < len(text) and text[next_char_index].isupper():
+                seg = text[last_split:cut_after].strip()
+                if seg: sentences.append(seg)
+                last_split = m.end()
     remainder = text[last_split:].strip()
-    if remainder:
-        sentences.append(remainder)
-
+    if remainder: sentences.append(remainder)
     return [s for s in sentences if s]
 
 def _advanced_split_into_sentences(text: str) -> List[str]:
     """Splits text into sentences, handling bullet points and normalizing line breaks."""
-    if not text or text.isspace():
-        return []
-
+    if not text or text.isspace(): return []
     t = text.replace("\r\n", "\n").replace("\r", "\n")
     bullet_matches = list(BULLET_POINT_PATTERN.finditer(t))
     collected: List[str] = []
-
     def _append_sentences_from(segment: str):
         for s in _split_text_by_punctuation(segment.strip()):
-            if s:
-                collected.append(s)
-
+            if s: collected.append(s)
     if bullet_matches:
         cur = 0
         for i, bm in enumerate(bullet_matches):
             start = bm.start()
             if i == 0 and start > cur:
                 pre = t[cur:start].strip()
-                if pre:
-                    _append_sentences_from(pre)
+                if pre: _append_sentences_from(pre)
             next_start = bullet_matches[i + 1].start() if i + 1 < len(bullet_matches) else len(t)
             bullet_seg = t[start:next_start].strip()
-            if bullet_seg:
-                collected.append(bullet_seg)
+            if bullet_seg: collected.append(bullet_seg)
             cur = next_start
         if cur < len(t):
             post = t[cur:].strip()
-            if post:
-                _append_sentences_from(post)
+            if post: _append_sentences_from(post)
         return collected
-
     return _split_text_by_punctuation(t)
 
 def _preprocess_and_segment_text_simple(full_text: str) -> List[str]:
-    """Separates non-verbal cues (in parentheses) from text before sentence splitting."""
-    if not full_text or full_text.isspace():
-        return []
-    parts = NON_VERBAL_CUE_PATTERN.split(full_text)
-    segments: List[str] = []
-    for part in parts:
-        if not part or part.isspace():
-            continue
-        if NON_VERBAL_CUE_PATTERN.fullmatch(part):
-            segments.append(part.strip())
-        else:
-            segments.extend(_advanced_split_into_sentences(part.strip()))
-    return segments
+    """Segments text into sentences."""
+    if not full_text or full_text.isspace(): return []
+    return _advanced_split_into_sentences(full_text)
 
 # =============================================================================
 #                          PUBLIC API
 # =============================================================================
 
 def split_text_into_chunks(text: str, max_length: int = None) -> list:
-    """Split text into manageable chunks for TTS processing (now normalized first)."""
-    if max_length is None:
-        max_length = Config.MAX_CHUNK_LENGTH
-
+    if max_length is None: max_length = Config.MAX_CHUNK_LENGTH
     text = normalize_for_tts(text)
-
-    if len(text) <= max_length:
-        return [text]
-
-    chunks: List[str] = []
-    current = ""
+    if len(text) <= max_length: return [text]
+    chunks: List[str] = []; current = ""
     sentences = _preprocess_and_segment_text_simple(text)
-
     for sentence in sentences:
         s = sentence.strip()
-        if not s:
-            continue
+        if not s: continue
         if len(current) + (1 if current else 0) + len(s) <= max_length:
             current = (current + " " + s) if current else s
         else:
-            if current:
-                chunks.append(current.strip())
+            if current: chunks.append(current.strip())
             if len(s) > max_length:
-                sub_chunks = _split_long_sentence(s, max_length)
-                chunks.extend(sub_chunks)
+                chunks.extend(_split_long_sentence(s, max_length))
                 current = ""
             else:
                 current = s
-
-    if current:
-        chunks.append(current.strip())
-
+    if current: chunks.append(current.strip())
     return [c for c in chunks if c.strip()]
 
-def split_text_for_streaming(
-    text: str,
-    chunk_size: Optional[int] = None,
-    strategy: Optional[str] = None,
-    quality: Optional[str] = None
-) -> List[str]:
-    """Split text into chunks optimized for streaming with different strategies (normalized first)."""
+def split_text_for_streaming(text: str, chunk_size: Optional[int] = None, strategy: Optional[str] = None, quality: Optional[str] = None) -> List[str]:
     text = normalize_for_tts(text)
-
     settings = get_streaming_settings(chunk_size, strategy, quality)
-    chunk_size = settings["chunk_size"]
-    strategy = settings["strategy"]
-
-    if strategy == "paragraph":
-        return _split_by_paragraphs(text, chunk_size)
-    elif strategy == "sentence":
-        return _split_by_sentences(text, chunk_size)
-    elif strategy == "word":
-        return _split_by_words(text, chunk_size)
-    elif strategy == "fixed":
-        return _split_by_fixed_size(text, chunk_size)
-    else:
-        return _split_by_sentences(text, chunk_size)
+    chunk_size = settings["chunk_size"]; strategy = settings["strategy"]
+    if strategy == "paragraph": return _split_by_paragraphs(text, chunk_size)
+    elif strategy == "sentence": return _split_by_sentences(text, chunk_size)
+    elif strategy == "word": return _split_by_words(text, chunk_size)
+    elif strategy == "fixed": return _split_by_fixed_size(text, chunk_size)
+    else: return _split_by_sentences(text, chunk_size)
 
 def _split_by_paragraphs(text: str, max_length: int) -> List[str]:
     paragraphs = re.split(r'\n\s*\n', text.strip())
-    chunks: List[str] = []
-    current = ""
-
-    for paragraph in paragraphs:
-        p = paragraph.strip()
-        if not p:
-            continue
+    chunks: List[str] = []; current = ""
+    for p in [p.strip() for p in paragraphs if p.strip()]:
         if len(current) + (2 if current else 0) + len(p) <= max_length:
             current = (current + "\n\n" + p) if current else p
         else:
-            if current:
-                chunks.append(current.strip())
+            if current: chunks.append(current.strip())
             if len(p) > max_length:
-                sentence_chunks = _split_by_sentences(p, max_length)
-                chunks.extend(sentence_chunks)
+                chunks.extend(_split_by_sentences(p, max_length))
                 current = ""
             else:
                 current = p
-
-    if current:
-        chunks.append(current.strip())
-
+    if current: chunks.append(current.strip())
     return [c for c in chunks if c.strip()]
 
 def _pack_sentences_to_chunks(sentences: List[str], max_length: int) -> List[str]:
-    chunks: List[str] = []
-    cur_parts: List[str] = []
-    cur_len = 0
-
-    for s in sentences:
-        s = s.strip()
-        if not s:
-            continue
+    chunks: List[str] = []; cur_parts: List[str] = []; cur_len = 0
+    for s in [s.strip() for s in sentences if s.strip()]:
         if not cur_parts:
-            cur_parts = [s]
-            cur_len = len(s)
+            cur_parts = [s]; cur_len = len(s)
         elif cur_len + 1 + len(s) <= max_length:
-            cur_parts.append(s)
-            cur_len += 1 + len(s)
+            cur_parts.append(s); cur_len += 1 + len(s)
         else:
             chunks.append(" ".join(cur_parts))
-            cur_parts = [s]
-            cur_len = len(s)
-
+            cur_parts = [s]; cur_len = len(s)
         if cur_len > max_length and len(cur_parts) == 1:
             chunks.extend(_split_long_sentence(cur_parts[0], max_length))
-            cur_parts = []
-            cur_len = 0
-
-    if cur_parts:
-        chunks.append(" ".join(cur_parts))
-
+            cur_parts = []; cur_len = 0
+    if cur_parts: chunks.append(" ".join(cur_parts))
     return [c for c in chunks if c.strip()]
 
 def _split_by_sentences(text: str, max_length: int) -> List[str]:
-    sentences = _preprocess_and_segment_text_simple(text)
-    return _pack_sentences_to_chunks(sentences, max_length)
+    return _pack_sentences_to_chunks(_preprocess_and_segment_text_simple(text), max_length)
 
 def _split_by_words(text: str, max_length: int) -> List[str]:
-    words = text.split()
-    chunks: List[str] = []
-    current = ""
-
+    words = text.split(); chunks: List[str] = []; current = ""
     for word in words:
         if len(current) + (1 if current else 0) + len(word) <= max_length:
             current = (current + " " + word) if current else word
         else:
-            if current:
-                chunks.append(current.strip())
+            if current: chunks.append(current.strip())
             if len(word) > max_length:
                 for i in range(0, len(word), max_length):
-                    piece = word[i:i + max_length]
-                    if piece:
-                        chunks.append(piece)
+                    if piece := word[i:i + max_length]: chunks.append(piece)
                 current = ""
             else:
                 current = word
-
-    if current:
-        chunks.append(current.strip())
-
+    if current: chunks.append(current.strip())
     return [c for c in chunks if c.strip()]
 
 def _split_by_fixed_size(text: str, chunk_size: int) -> List[str]:
-    chunks: List[str] = []
-    for i in range(0, len(text), chunk_size):
-        chunk = text[i:i + chunk_size].strip()
-        if chunk:
-            chunks.append(chunk)
-    return chunks
+    return [chunk for i in range(0, len(text), chunk_size) if (chunk := text[i:i + chunk_size].strip())]
 
 def _split_long_sentence(sentence: str, max_length: int) -> List[str]:
-    delimiters = [', ', '; ', ' - ', ' — ', ': ', ' and ', ' or ', ' but ']
-    chunks = [sentence]
+    delimiters = [', ', '; ', ' - ', ' — ', ': ', ' and ', ' or ', ' but ']; chunks = [sentence]
     for delim in delimiters:
         new_chunks: List[str] = []
         for ch in chunks:
-            if len(ch) <= max_length:
-                new_chunks.append(ch)
+            if len(ch) <= max_length: new_chunks.append(ch)
             else:
-                parts = ch.split(delim)
-                cur = ""
+                parts = ch.split(delim); cur = ""
                 for i, part in enumerate(parts):
-                    if i > 0:
-                        prospective = delim + part
-                    else:
-                        prospective = part
-
-                    if len(cur) + len(prospective) <= max_length:
-                        cur += prospective
+                    prospective = (delim if i > 0 else "") + part
+                    if len(cur) + len(prospective) <= max_length: cur += prospective
                     else:
                         if cur: new_chunks.append(cur)
                         cur = part
                 if cur: new_chunks.append(cur)
         chunks = new_chunks
-
     final_chunks: List[str] = []
     for ch in chunks:
-        if len(ch) <= max_length:
-            final_chunks.append(ch)
-        else:
-            final_chunks.extend(_split_by_words(ch, max_length))
+        if len(ch) <= max_length: final_chunks.append(ch)
+        else: final_chunks.extend(_split_by_words(ch, max_length))
     return [c.strip() for c in final_chunks if c.strip()]
 
-def get_streaming_settings(
-    streaming_chunk_size: Optional[int],
-    streaming_strategy: Optional[str],
-    streaming_quality: Optional[str]
-) -> dict:
-    settings = {
-        "chunk_size": streaming_chunk_size or 200,
-        "strategy": streaming_strategy or "sentence",
-        "quality": streaming_quality or "balanced"
-    }
-
+def get_streaming_settings(streaming_chunk_size: Optional[int], streaming_strategy: Optional[str], streaming_quality: Optional[str]) -> dict:
+    settings = {"chunk_size": streaming_chunk_size or 200, "strategy": streaming_strategy or "sentence", "quality": streaming_quality or "balanced"}
     if streaming_quality and not streaming_chunk_size:
         if streaming_quality == "fast": settings["chunk_size"] = 100
         elif streaming_quality == "high": settings["chunk_size"] = 300
-
     if streaming_quality and not streaming_strategy:
         if streaming_quality == "fast": settings["strategy"] = "word"
         elif streaming_quality == "high": settings["strategy"] = "paragraph"
-
     return settings
 
 def concatenate_audio_chunks(audio_chunks: list, sample_rate: int) -> torch.Tensor:
-    if not audio_chunks:
-        return torch.tensor([])
-    if len(audio_chunks) == 1:
-        return audio_chunks[0]
-
+    if not audio_chunks: return torch.tensor([])
+    if len(audio_chunks) == 1: return audio_chunks[0]
     silence_samples = int(0.1 * sample_rate)
     device = audio_chunks[0].device if hasattr(audio_chunks[0], 'device') else 'cpu'
     silence = torch.zeros(1, silence_samples, device=device)
-
     with torch.no_grad():
         concatenated = audio_chunks[0]
         for i, chunk in enumerate(audio_chunks[1:], 1):
             concatenated = torch.cat([concatenated, silence, chunk], dim=1)
-            # Memory management for very long concatenations
             if i % 10 == 0:
                 gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-
-    del silence
+                if torch.cuda.is_available(): torch.cuda.empty_cache()
     return concatenated
 
-def split_text_for_long_generation(
-    text: str,
-    max_chunk_size: Optional[int] = None,
-    overlap_chars: int = 0
-) -> List[LongTextChunk]:
-    """Split long text with hierarchical strategy; sentence detection upgraded; normalization baked in."""
-    if max_chunk_size is None:
-        max_chunk_size = Config.LONG_TEXT_CHUNK_SIZE
-
+def split_text_for_long_generation(text: str, max_chunk_size: Optional[int] = None, overlap_chars: int = 0) -> List[LongTextChunk]:
+    if max_chunk_size is None: max_chunk_size = Config.LONG_TEXT_CHUNK_SIZE
     text = normalize_for_tts(text)
-
     effective_max = min(max_chunk_size, Config.MAX_TOTAL_LENGTH - 100)
-    # Ensure overlap is not excessively large
     sane_overlap = min(overlap_chars, effective_max // 2)
-
-    chunks: List[LongTextChunk] = []
-    idx = 0
-    remaining = text.strip()
-
+    chunks: List[LongTextChunk] = []; idx = 0; remaining = text.strip()
     while remaining:
         if len(remaining) <= effective_max:
-            chunk_text = remaining
-            remaining = ""
+            chunk_text = remaining; remaining = ""
         else:
-            chunk_text, remaining = _find_best_split_point(
-                remaining, effective_max, sane_overlap
-            )
-
-        chunk = LongTextChunk(
-            index=idx,
-            text=chunk_text,
-            text_preview=chunk_text[:50] + ("..." if len(chunk_text) > 50 else ""),
-            character_count=len(chunk_text)
-        )
-        chunks.append(chunk)
-        idx += 1
-
+            chunk_text, remaining = _find_best_split_point(remaining, effective_max, sane_overlap)
+        chunk = LongTextChunk(index=idx, text=chunk_text, text_preview=chunk_text[:50] + ("..." if len(chunk_text) > 50 else ""), character_count=len(chunk_text))
+        chunks.append(chunk); idx += 1
     return chunks
 
 def _find_best_split_point(text: str, max_length: int, overlap_chars: int = 0) -> Tuple[str, str]:
-    if len(text) <= max_length:
-        return text, ""
-
-    r = _try_split_at_paragraphs(text, max_length, overlap_chars)
-    if r: return r
-
-    r = _try_split_at_sentences(text, max_length, overlap_chars)
-    if r: return r
-
-    r = _try_split_at_clauses(text, max_length, overlap_chars)
-    if r: return r
-
+    if len(text) <= max_length: return text, ""
+    if r := _try_split_at_paragraphs(text, max_length, overlap_chars): return r
+    if r := _try_split_at_sentences(text, max_length, overlap_chars): return r
+    if r := _try_split_at_clauses(text, max_length, overlap_chars): return r
     return _split_at_words(text, max_length, overlap_chars)
 
 def _try_split_at_paragraphs(text: str, max_length: int, overlap_chars: int) -> Optional[Tuple[str, str]]:
-    matches = list(re.finditer(r'\n\s*\n', text))
-    if not matches:
-        return None
-
-    best = None
+    matches = list(re.finditer(r'\n\s*\n', text)); best = None
+    if not matches: return None
     for m in matches:
-        split_pos = m.end()
-        if split_pos <= max_length:
-            best = split_pos
-        else:
-            break
-
+        if (split_pos := m.end()) <= max_length: best = split_pos
+        else: break
     if best and best > max_length * 0.5:
         chunk_text = text[:best].strip()
-        start_of_remaining = max(0, best - overlap_chars)
-        remaining = text[start_of_remaining:].strip()
+        remaining = text[max(0, best - overlap_chars):].strip()
         return chunk_text, remaining
     return None
 
 def _try_split_at_sentences(text: str, max_length: int, overlap_chars: int) -> Optional[Tuple[str, str]]:
     sentences = _preprocess_and_segment_text_simple(text)
-    if not sentences:
-        return None
-
-    cum = 0
-    last_ok_idx = -1
+    if not sentences: return None
+    cum = 0; last_ok_idx = -1
     for i, s in enumerate(sentences):
         add = (1 if cum > 0 else 0) + len(s)
-        if cum + add <= max_length:
-            cum += add
-            last_ok_idx = i
-        else:
-            break
-
+        if cum + add <= max_length: cum += add; last_ok_idx = i
+        else: break
     if last_ok_idx >= 0 and cum > max_length * 0.4:
         chunk_text = " ".join(sentences[:last_ok_idx + 1]).strip()
-        # Find where the remaining text actually starts to handle overlap correctly
         original_start_pos = text.find(sentences[last_ok_idx + 1]) if last_ok_idx + 1 < len(sentences) else len(chunk_text)
-        start_of_remaining = max(0, original_start_pos - overlap_chars)
-        remaining = text[start_of_remaining:].strip()
+        remaining = text[max(0, original_start_pos - overlap_chars):].strip()
         return chunk_text, remaining
-
     return None
 
 def _try_split_at_clauses(text: str, max_length: int, overlap_chars: int) -> Optional[Tuple[str, str]]:
     clause_delims = [', ', '; ', ': ', ' - ', ' — ', ' and ', ' or ', ' but ', ' while ', ' when ']
-
     best_split = 0
-    # Find the rightmost possible split point within the max_length limit
     for d in clause_delims:
-        pos = text.rfind(d, 0, max_length)
-        if pos != -1:
+        if (pos := text.rfind(d, 0, max_length)) != -1:
             best_split = max(best_split, pos + len(d))
-
     if best_split and best_split > max_length * 0.3:
         chunk_text = text[:best_split].strip()
-        start_of_remaining = max(0, best_split - overlap_chars)
-        remaining = text[start_of_remaining:].strip()
+        remaining = text[max(0, best_split - overlap_chars):].strip()
         return chunk_text, remaining
     return None
 
 def _split_at_words(text: str, max_length: int, overlap_chars: int) -> Tuple[str, str]:
-    if len(text) <= max_length:
-        return text, ""
+    if len(text) <= max_length: return text, ""
     split_pos = text.rfind(' ', 0, max_length)
-    if split_pos == -1: # No space found
-        split_pos = max_length
+    if split_pos == -1: split_pos = max_length
     chunk_text = text[:split_pos].strip()
-    start_of_remaining = max(0, split_pos - overlap_chars)
-    remaining = text[start_of_remaining:].strip()
+    remaining = text[max(0, split_pos - overlap_chars):].strip()
     return chunk_text, remaining
 
-# =============================================================================
-#                      ESTIMATE & VALIDATION
-# =============================================================================
-
 def estimate_processing_time(text_length: int, avg_chars_per_second: float = 25.0) -> int:
-    """
-    Estimate processing time for long text TTS generation.
-
-    Args:
-        text_length: Total characters in text
-        avg_chars_per_second: Average processing rate (characters per second)
-
-    Returns:
-        Estimated processing time in seconds
-    """
     base_time = text_length / avg_chars_per_second
     num_chunks = max(1, (text_length + Config.LONG_TEXT_CHUNK_SIZE - 1) // Config.LONG_TEXT_CHUNK_SIZE)
     overhead = 5 + (num_chunks * 2) + 10
     return int(base_time + overhead)
 
 def validate_long_text_input(text: str) -> Tuple[bool, str]:
-    """
-    Validate text for long text TTS generation.
-
-    Returns:
-        Tuple of (is_valid, error_message)
-    """
-    if not text or not text.strip():
-        return False, "Input text cannot be empty"
-
+    if not text or not text.strip(): return False, "Input text cannot be empty"
     text_length = len(text.strip())
-
-    if text_length <= Config.MAX_TOTAL_LENGTH:
-        return False, f"Text is {text_length} characters. Use regular TTS for texts under {Config.MAX_TOTAL_LENGTH} characters"
-
-    if text_length > Config.LONG_TEXT_MAX_LENGTH:
-        return False, f"Text is too long ({text_length} characters). Maximum allowed: {Config.LONG_TEXT_MAX_LENGTH}"
-
-    # Check for excessive repetition (potential spam/abuse)
+    if text_length <= Config.MAX_TOTAL_LENGTH: return False, f"Text is {text_length} characters. Use regular TTS for texts under {Config.MAX_TOTAL_LENGTH} characters"
+    if text_length > Config.LONG_TEXT_MAX_LENGTH: return False, f"Text is too long ({text_length} characters). Maximum allowed: {Config.LONG_TEXT_MAX_LENGTH}"
     words = text.split()
-    if len(words) > 50 and len(set(words)) < len(words) * 0.1:  # Less than 10% unique words
-        return False, "Text appears to be excessively repetitive"
-
+    if len(words) > 50 and len(set(words)) < len(words) * 0.1: return False, "Text appears to be excessively repetitive"
     return True, ""
-
-# =============================================================================
-#                      TESTING CONSIDERATIONS
-# =============================================================================
-#
-# For comprehensive testing, consider unit tests for:
-# - `normalize_for_tts`:
-#   - Each specific pattern (e.g., "$1,250,000", "15,000 ft", "2,000 °C").
-#   - Standalone numbers like "The population is 2,345,678."
-#   - Decimal handling in `_verbalize_number`.
-# - `_advanced_split_into_sentences`:
-#   - Sentences ending with abbreviations vs. true ends (e.g., "Mr. Smith vs. the world.").
-#   - Text with bullet points, numbered lists, and non-verbal cues.
-# - Chunking functions (`split_text_into_chunks`, `split_text_for_long_generation`):
-#   - Boundary conditions and overlap logic.
-#

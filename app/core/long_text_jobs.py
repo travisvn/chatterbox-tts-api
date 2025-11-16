@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import shutil
+import threading
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -35,6 +36,7 @@ class LongTextJobManager:
     def __init__(self):
         self.data_dir = Path(Config.LONG_TEXT_DATA_DIR)
         self.active_jobs: Dict[str, asyncio.Task] = {}
+        self.active_jobs_lock = threading.Lock()
         self.job_queue: asyncio.Queue = asyncio.Queue()
         self.processing_semaphore = asyncio.Semaphore(Config.LONG_TEXT_MAX_CONCURRENT_JOBS)
         self._ensure_data_directory()
@@ -428,9 +430,9 @@ class LongTextJobManager:
 
             # Date filters
             comparison_date = metadata.completion_timestamp or metadata.created_at
-            if start_date and comparison_date < start_date:
+            if start_date and comparison_date and comparison_date < start_date:
                 continue
-            if end_date and comparison_date > end_date:
+            if end_date and comparison_date and comparison_date > end_date:
                 continue
 
             # Archive filter
@@ -598,10 +600,11 @@ class LongTextJobManager:
         if not metadata or metadata.status != LongTextJobStatus.PROCESSING:
             return False
 
-        # Cancel the processing task if it exists
-        if job_id in self.active_jobs:
-            self.active_jobs[job_id].cancel()
-            del self.active_jobs[job_id]
+        # Cancel the processing task if it exists (thread-safe)
+        with self.active_jobs_lock:
+            if job_id in self.active_jobs:
+                self.active_jobs[job_id].cancel()
+                del self.active_jobs[job_id]
 
         # Update metadata
         metadata.status = LongTextJobStatus.PAUSED
@@ -637,10 +640,11 @@ class LongTextJobManager:
         if metadata.status in [LongTextJobStatus.COMPLETED, LongTextJobStatus.FAILED]:
             return False
 
-        # Cancel the processing task if it exists
-        if job_id in self.active_jobs:
-            self.active_jobs[job_id].cancel()
-            del self.active_jobs[job_id]
+        # Cancel the processing task if it exists (thread-safe)
+        with self.active_jobs_lock:
+            if job_id in self.active_jobs:
+                self.active_jobs[job_id].cancel()
+                del self.active_jobs[job_id]
 
         # Update metadata
         metadata.status = LongTextJobStatus.CANCELLED

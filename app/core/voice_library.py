@@ -5,11 +5,14 @@ Voice library management for storing and retrieving user-uploaded voices
 import os
 import json
 import hashlib
+import logging
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 from pathlib import Path
 
 from app.config import Config
+
+logger = logging.getLogger(__name__)
 
 # Supported audio formats for voice uploads
 SUPPORTED_VOICE_FORMATS = {'.mp3', '.wav', '.flac', '.m4a', '.ogg'}

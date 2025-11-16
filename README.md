@@ -214,6 +214,90 @@ The frontend uses a reverse proxy to route requests, so when running with `--pro
 
 > 🖼️ View screenshot of full frontend web UI — [light mode](https://lm17s1uz51.ufs.sh/f/EsgO8cDHBTOUoONOy6UZv2m8CUjqGrBbDy4aXzNV9Rl1ZAgQ) / [dark mode](https://lm17s1uz51.ufs.sh/f/EsgO8cDHBTOU7RmQRTFVcR8ntzKQs0IxJ6ibFrq2hjCSadUG)
 
+## 🎯 Model Selection
+
+The API supports multiple Chatterbox TTS model versions, allowing you to choose the best model for your use case.
+
+### Available Models
+
+| Model ID | Type | Languages | Description |
+|----------|------|-----------|-------------|
+| `chatterbox-multilingual-v2` | Multilingual | 23 | Official ResembleAI package with v2 updates (default) |
+| `chatterbox-multilingual-v1` | Multilingual | 23 | Experimental fork with additional features |
+| `chatterbox-v2` | Standard | English | Official ResembleAI package, English-only |
+| `chatterbox-v1` | Standard | English | Experimental fork, English-only |
+| `tts-1` | Alias | Auto | OpenAI-compatible name (maps to default model) |
+| `tts-1-hd` | Alias | Auto | OpenAI-compatible name (maps to default model) |
+
+### Model Selection Examples
+
+```bash
+# Use the default V2 multilingual model (recommended)
+curl -X POST http://localhost:4123/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input": "Hello world"}' \
+  --output speech.wav
+
+# Explicitly select V2 multilingual model
+curl -X POST http://localhost:4123/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input": "Hello world", "model": "chatterbox-multilingual-v2"}' \
+  --output speech.wav
+
+# Use V1 multilingual model (experimental features)
+curl -X POST http://localhost:4123/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input": "Hello world", "model": "chatterbox-multilingual-v1"}' \
+  --output speech.wav
+
+# Use English-only V2 model (faster, less memory)
+curl -X POST http://localhost:4123/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input": "Hello world", "model": "chatterbox-v2"}' \
+  --output speech.wav
+
+# OpenAI-compatible model name
+curl -X POST http://localhost:4123/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input": "Hello world", "model": "tts-1"}' \
+  --output speech.wav
+```
+
+### Configuration
+
+Set your default model in `.env`:
+
+```env
+# Enable multilingual support
+USE_MULTILINGUAL_MODEL=true
+
+# Choose default version (v1 or v2)
+DEFAULT_MODEL_VERSION=v2
+
+# Results in default model: chatterbox-multilingual-v2
+```
+
+### Model Features
+
+**V2 Models (Recommended):**
+- Official ResembleAI package (chatterbox-tts 0.1.4)
+- Latest multilingual improvements
+- Production-ready and well-tested
+- MIT licensed
+
+**V1 Models:**
+- Experimental fork with additional features
+- May include bleeding-edge improvements
+- Use for testing new capabilities
+
+### Lazy Loading
+
+Models are loaded on-demand to save memory:
+- Only the default model loads on startup
+- Other models load when first requested
+- All loaded models stay in memory for fast access
+- Check loaded models with `GET /models`
+
 ## API Usage
 
 ### Basic Text-to-Speech (Default Voice)

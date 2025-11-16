@@ -30,13 +30,16 @@ ascii_art = r"""
 async def lifespan(app: FastAPI):
     # Startup
     print(ascii_art)
-    
+
     # Start model initialization in the background
     # This allows the server to respond to health checks immediately
     # while the model loads asynchronously
     import asyncio
     model_init_task = asyncio.create_task(initialize_model())
-    
+
+    # Store in app state for access during shutdown
+    app.state.model_init_task = model_init_task
+
     # Initialize voice library to restore default voice settings
     print("Initializing voice library...")
     voice_lib = get_voice_library()
@@ -53,9 +56,9 @@ async def lifespan(app: FastAPI):
 
     # Note: We don't await the model initialization here
     # The server will start immediately and health checks will show initialization status
-    
+
     yield
-    
+
     # Shutdown (cleanup if needed)
     # Stop background processor
     print("Stopping long text background processor...")
@@ -63,10 +66,10 @@ async def lifespan(app: FastAPI):
     print("Long text background processor stopped")
 
     # Cancel model initialization if it's still running
-    if not model_init_task.done():
-        model_init_task.cancel()
+    if hasattr(app.state, 'model_init_task') and not app.state.model_init_task.done():
+        app.state.model_init_task.cancel()
         try:
-            await model_init_task
+            await app.state.model_init_task
         except asyncio.CancelledError:
             pass
 
@@ -104,9 +107,20 @@ app.include_router(api_router)
 # Error handlers
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc):
+    # Ensure consistent error format
+    if isinstance(exc.detail, dict):
+        content = exc.detail
+    else:
+        # Wrap string details in proper error format
+        content = {
+            "error": {
+                "message": str(exc.detail),
+                "type": "api_error"
+            }
+        }
     return JSONResponse(
         status_code=exc.status_code,
-        content=exc.detail
+        content=content
     )
 
 

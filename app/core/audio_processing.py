@@ -202,9 +202,17 @@ def _normalize_audio_levels(segments: List[AudioSegment]) -> List[AudioSegment]:
         return segments
 
     try:
-        # Calculate average dBFS across all segments
-        total_dbfs = sum(segment.dBFS for segment in segments if segment.dBFS is not None)
-        avg_dbfs = total_dbfs / len(segments)
+        # Get only segments with valid dBFS values
+        valid_segments = [segment for segment in segments if segment.dBFS is not None]
+
+        # If no valid segments, return original segments unchanged
+        if not valid_segments:
+            logger.debug("No segments with valid dBFS values to normalize")
+            return segments
+
+        # Calculate average dBFS across valid segments
+        total_dbfs = sum(segment.dBFS for segment in valid_segments)
+        avg_dbfs = total_dbfs / len(valid_segments)
 
         # Target level (slightly below 0 dBFS to prevent clipping)
         target_dbfs = -3.0

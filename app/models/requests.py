@@ -50,6 +50,10 @@ class TTSRequest(BaseModel):
                 'chatterbox-v2',
                 'chatterbox-multilingual-v1',
                 'chatterbox-multilingual-v2',
+                'indextts-2',  # IndexTTS-2 model
+                'higgs-audio-v2',  # Higgs Audio V2 model
+                'vibevoice-1.5b',  # VibeVoice 1.5B model
+                'vibevoice-7b',  # VibeVoice 7B model
                 'tts-1',  # OpenAI compatibility - maps to default
                 'tts-1-hd'  # OpenAI compatibility - maps to default
             ]

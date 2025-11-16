@@ -9,10 +9,12 @@ from .base import BaseTTSEngine
 from .chatterbox import ChatterboxEngine
 from .indextts import IndexTTSEngine
 from .higgs_audio import HiggsAudioEngine
+from .vibevoice import VibeVoiceEngine
 
 __all__ = [
     "BaseTTSEngine",
     "ChatterboxEngine",
     "IndexTTSEngine",
     "HiggsAudioEngine",
+    "VibeVoiceEngine",
 ]

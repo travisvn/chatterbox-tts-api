@@ -223,6 +223,7 @@ async def generate_speech_internal(
 
     audio_chunks: List[Any] = []
     final_audio = None
+    final_audio_cpu = None
     buffer = None
     assembled_segments: List[Any] = []
     silence_segments: List[Any] = []
@@ -431,8 +432,8 @@ async def generate_speech_internal(
             # Clean up final audio tensor
             if final_audio is not None:
                 safe_delete_tensors(final_audio)
-                if 'final_audio_cpu' in locals():
-                    safe_delete_tensors(final_audio_cpu)
+            if final_audio_cpu is not None:
+                safe_delete_tensors(final_audio_cpu)
 
             # Clear the list
             audio_chunks.clear()

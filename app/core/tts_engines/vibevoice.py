@@ -153,10 +153,18 @@ class VibeVoiceEngine(BaseTTSEngine):
             import tempfile
             import torchaudio as ta
 
+            # Validate temperature parameter
+            if not (0.05 <= temperature <= 5.0):
+                raise ValueError(f"Temperature must be between 0.05 and 5.0, got {temperature}")
+
             # Extract additional parameters
             speaker_names = kwargs.get('speaker_names', ['Speaker'])
             top_p = kwargs.get('top_p', min(max(cfg_weight, 0.1), 1.0))
             seed = kwargs.get('seed', None)
+
+            # Validate top_p parameter
+            if not (0.0 <= top_p <= 1.0):
+                raise ValueError(f"top_p must be between 0.0 and 1.0, got {top_p}")
 
             # Create temporary output file
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_output:

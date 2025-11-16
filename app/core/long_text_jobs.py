@@ -611,7 +611,7 @@ class LongTextJobManager:
         logger.info(f"Paused job {job_id}")
         return True
 
-    def resume_job(self, job_id: str) -> bool:
+    async def resume_job(self, job_id: str) -> bool:
         """Resume a paused job"""
         metadata = self._load_job_metadata(job_id)
         if not metadata or metadata.status != LongTextJobStatus.PAUSED:
@@ -623,7 +623,7 @@ class LongTextJobManager:
         self._save_job_metadata(metadata)
 
         # Add back to queue for processing
-        asyncio.create_task(self.job_queue.put(job_id))
+        await self.job_queue.put(job_id)
 
         logger.info(f"Resumed job {job_id}")
         return True

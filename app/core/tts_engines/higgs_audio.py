@@ -137,48 +137,55 @@ class HiggsAudioEngine(BaseTTSEngine):
             import torchaudio as ta
 
             # Create temporary output file
-            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_output:
-                output_path = tmp_output.name
-
-            # Higgs Audio inference
-            # The exact method depends on the version, this is based on available docs
+            output_path = None
             try:
-                # Try to generate using reference audio
-                result = self.serve_engine.generate(
-                    messages=messages,
-                    reference_audio=audio_prompt_path,
-                    temperature=temperature,
-                    top_p=top_p,
-                    max_tokens=4096,
-                    output_path=output_path
-                )
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_output:
+                    output_path = tmp_output.name
 
-                # Load generated audio
-                waveform, sample_rate = ta.load(output_path)
+                # Higgs Audio inference
+                # The exact method depends on the version, this is based on available docs
+                try:
+                    # Try to generate using reference audio
+                    result = self.serve_engine.generate(
+                        messages=messages,
+                        reference_audio=audio_prompt_path,
+                        temperature=temperature,
+                        top_p=top_p,
+                        max_tokens=4096,
+                        output_path=output_path
+                    )
 
-                # Clean up temp file
-                os.unlink(output_path)
+                    # Load generated audio
+                    waveform, sample_rate = ta.load(output_path)
 
-                # Resample if needed
-                if sample_rate != self.sr:
-                    resampler = ta.transforms.Resample(sample_rate, self.sr)
-                    waveform = resampler(waveform)
+                    # Resample if needed
+                    if sample_rate != self.sr:
+                        resampler = ta.transforms.Resample(sample_rate, self.sr)
+                        waveform = resampler(waveform)
 
-                # Ensure correct shape [1, samples]
-                if waveform.dim() == 1:
-                    waveform = waveform.unsqueeze(0)
-                elif waveform.shape[0] > 1:
-                    # Convert stereo to mono if needed
-                    waveform = torch.mean(waveform, dim=0, keepdim=True)
+                    # Ensure correct shape [1, samples]
+                    if waveform.dim() == 1:
+                        waveform = waveform.unsqueeze(0)
+                    elif waveform.shape[0] > 1:
+                        # Convert stereo to mono if needed
+                        waveform = torch.mean(waveform, dim=0, keepdim=True)
 
-                return waveform
+                    return waveform
 
-            except AttributeError:
-                # Fallback for different API version
-                raise NotImplementedError(
-                    "Higgs Audio V2 API integration needs adjustment for this version. "
+                except AttributeError:
+                    # Fallback for different API version
+                    raise NotImplementedError(
+                        "Higgs Audio V2 API integration needs adjustment for this version. "
                     "Please check the higgs-audio repository for the correct API usage."
                 )
+
+            finally:
+                # Clean up temp file
+                if output_path and os.path.exists(output_path):
+                    try:
+                        os.unlink(output_path)
+                    except OSError:
+                        pass
 
         except Exception as e:
             raise RuntimeError(f"Higgs Audio V2 generation failed: {e}")

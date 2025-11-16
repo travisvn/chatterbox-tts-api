@@ -119,6 +119,8 @@ class Config:
             )
         if cls.LONG_TEXT_CHUNK_SIZE <= 0:
             raise ValueError(f"LONG_TEXT_CHUNK_SIZE must be positive, got {cls.LONG_TEXT_CHUNK_SIZE}")
+        if cls.LONG_TEXT_CHUNK_SIZE < 100:
+            raise ValueError(f"LONG_TEXT_CHUNK_SIZE must be at least 100 characters, got {cls.LONG_TEXT_CHUNK_SIZE}")
         if cls.LONG_TEXT_CHUNK_SIZE >= cls.MAX_TOTAL_LENGTH:
             raise ValueError(f"LONG_TEXT_CHUNK_SIZE ({cls.LONG_TEXT_CHUNK_SIZE}) must be less than MAX_TOTAL_LENGTH ({cls.MAX_TOTAL_LENGTH})")
         if cls.LONG_TEXT_SILENCE_PADDING_MS < 0:

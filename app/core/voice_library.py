@@ -41,8 +41,16 @@ class VoiceLibrary:
     
     def _save_metadata(self):
         """Save voice metadata to JSON file"""
-        with open(self.metadata_file, 'w', encoding='utf-8') as f:
-            json.dump(self._metadata, f, indent=2, ensure_ascii=False)
+        try:
+            # Write to temp file first for atomic operation
+            temp_file = self.metadata_file.with_suffix('.tmp')
+            with open(temp_file, 'w', encoding='utf-8') as f:
+                json.dump(self._metadata, f, indent=2, ensure_ascii=False)
+            # Atomic rename
+            temp_file.replace(self.metadata_file)
+        except (IOError, OSError) as e:
+            logger.error(f"Failed to save voice metadata: {e}")
+            raise RuntimeError(f"Failed to save voice library metadata: {e}")
     
     def _load_config(self) -> Dict:
         """Load configuration from JSON file"""
@@ -61,17 +69,31 @@ class VoiceLibrary:
     
     def _save_config(self):
         """Save configuration to JSON file"""
-        self._config["last_updated"] = datetime.now().isoformat()
-        with open(self.config_file, 'w', encoding='utf-8') as f:
-            json.dump(self._config, f, indent=2, ensure_ascii=False)
+        try:
+            self._config["last_updated"] = datetime.now().isoformat()
+            # Write to temp file first for atomic operation
+            temp_file = self.config_file.with_suffix('.tmp')
+            with open(temp_file, 'w', encoding='utf-8') as f:
+                json.dump(self._config, f, indent=2, ensure_ascii=False)
+            # Atomic rename
+            temp_file.replace(self.config_file)
+        except (IOError, OSError) as e:
+            logger.error(f"Failed to save voice library config: {e}")
+            raise RuntimeError(f"Failed to save voice library configuration: {e}")
     
     def _get_file_hash(self, file_path: Path) -> str:
         """Generate a hash for the voice file for deduplication"""
-        hash_md5 = hashlib.md5()
-        with open(file_path, "rb") as f:
-            for chunk in iter(lambda: f.read(4096), b""):
-                hash_md5.update(chunk)
-        return hash_md5.hexdigest()
+        if not file_path.exists():
+            raise FileNotFoundError(f"Voice file not found: {file_path}")
+
+        try:
+            hash_md5 = hashlib.md5()
+            with open(file_path, "rb") as f:
+                for chunk in iter(lambda: f.read(4096), b""):
+                    hash_md5.update(chunk)
+            return hash_md5.hexdigest()
+        except (IOError, OSError) as e:
+            raise RuntimeError(f"Failed to hash voice file {file_path}: {e}")
     
     def add_voice(self, voice_name: str, file_content: bytes, original_filename: str, language: str = "en") -> Dict:
         """
@@ -235,13 +257,15 @@ class VoiceLibrary:
         if voice_path.exists():
             try:
                 voice_path.unlink()
-            except OSError:
-                pass  # File might be in use, but we'll remove from metadata anyway
-        
+            except OSError as e:
+                # Don't delete from metadata if file couldn't be removed
+                logger.error(f"Failed to delete voice file {voice_path}: {e}")
+                raise RuntimeError(f"Voice file is in use or cannot be deleted: {e}")
+
         # Remove from metadata
         del self._metadata["voices"][voice_name]
         self._save_metadata()
-        
+
         return True
     
     def rename_voice(self, old_name: str, new_name: str) -> bool:

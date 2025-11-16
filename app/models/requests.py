@@ -7,8 +7,9 @@ from pydantic import BaseModel, Field, validator
 
 class TTSRequest(BaseModel):
     """Text-to-speech request model"""
-    
+
     input: str = Field(..., description="The text to generate audio for", min_length=1, max_length=3000)
+    model: Optional[str] = Field(None, description="Model version to use: chatterbox-v1, chatterbox-v2, chatterbox-multilingual-v1, chatterbox-multilingual-v2")
     voice: Optional[str] = Field("alloy", description="Voice to use (ignored - uses voice sample)")
     response_format: Optional[str] = Field("wav", description="Audio format (always returns WAV)")
     speed: Optional[float] = Field(1.0, description="Speed of speech (ignored)")
@@ -40,6 +41,21 @@ class TTSRequest(BaseModel):
         if not v or not v.strip():
             raise ValueError('Input text cannot be empty')
         return v.strip()
+
+    @validator('model')
+    def validate_model(cls, v):
+        if v is not None:
+            allowed_models = [
+                'chatterbox-v1',
+                'chatterbox-v2',
+                'chatterbox-multilingual-v1',
+                'chatterbox-multilingual-v2',
+                'tts-1',  # OpenAI compatibility - maps to default
+                'tts-1-hd'  # OpenAI compatibility - maps to default
+            ]
+            if v not in allowed_models:
+                raise ValueError(f'model must be one of: {", ".join(allowed_models)}')
+        return v
     
     @validator('stream_format')
     def validate_stream_format(cls, v):

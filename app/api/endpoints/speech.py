@@ -22,7 +22,7 @@ from app.core import (
     TTSStatus, start_tts_request, update_tts_status, get_voice_library
 )
 from app.core.pause_handler import PauseHandler
-from app.core.tts_model import get_model, is_multilingual
+from app.core.tts_model import get_or_load_model, is_multilingual
 from app.core.text_processing import split_text_for_streaming, get_streaming_settings
 
 # Create router with aliasing support
@@ -147,6 +147,7 @@ async def generate_speech_internal(
     text: str,
     voice_sample_path: str,
     language_id: str = "en",
+    model_version: Optional[str] = None,
     exaggeration: Optional[float] = None,
     cfg_weight: Optional[float] = None,
     temperature: Optional[float] = None,
@@ -183,9 +184,21 @@ async def generate_speech_internal(
         }
     )
     
-    update_tts_status(request_id, TTSStatus.INITIALIZING, "Checking model availability")
+    update_tts_status(request_id, TTSStatus.INITIALIZING, "Loading model")
 
-    model = get_model()
+    # Map OpenAI model names to our model versions
+    if model_version in ["tts-1", "tts-1-hd"]:
+        model_version = None  # Use default
+
+    try:
+        model = await get_or_load_model(model_version)
+    except Exception as e:
+        update_tts_status(request_id, TTSStatus.ERROR, error_message=f"Failed to load model: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": {"message": f"Failed to load model: {str(e)}", "type": "model_error"}}
+        )
+
     if model is None:
         update_tts_status(request_id, TTSStatus.ERROR, error_message="Model not loaded")
         raise HTTPException(
@@ -335,7 +348,7 @@ async def generate_speech_internal(
                 }
                 
                 # Add language_id for multilingual models
-                if is_multilingual():
+                if is_multilingual(model_version):
                     generate_kwargs["language_id"] = language_id
                 
                 audio_tensor = await loop.run_in_executor(
@@ -471,6 +484,7 @@ async def generate_speech_streaming(
     text: str,
     voice_sample_path: str,
     language_id: str = "en",
+    model_version: Optional[str] = None,
     exaggeration: Optional[float] = None,
     cfg_weight: Optional[float] = None,
     temperature: Optional[float] = None,
@@ -499,9 +513,21 @@ async def generate_speech_streaming(
         }
     )
     
-    update_tts_status(request_id, TTSStatus.INITIALIZING, "Checking model availability (streaming)")
+    update_tts_status(request_id, TTSStatus.INITIALIZING, "Loading model (streaming)")
 
-    model = get_model()
+    # Map OpenAI model names to our model versions
+    if model_version in ["tts-1", "tts-1-hd"]:
+        model_version = None  # Use default
+
+    try:
+        model = await get_or_load_model(model_version)
+    except Exception as e:
+        update_tts_status(request_id, TTSStatus.ERROR, error_message=f"Failed to load model: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": {"message": f"Failed to load model: {str(e)}", "type": "model_error"}}
+        )
+
     if model is None:
         update_tts_status(request_id, TTSStatus.ERROR, error_message="Model not loaded")
         raise HTTPException(
@@ -604,7 +630,7 @@ async def generate_speech_streaming(
                         "cfg_weight": cfg_w,
                         "temperature": temp
                     }
-                    if is_multilingual():
+                    if is_multilingual(model_version):
                         kwargs["language_id"] = lang_id
                     return model.generate(**kwargs)
 
@@ -815,7 +841,7 @@ async def generate_speech_sse(
                         "cfg_weight": cfg_w,
                         "temperature": temp
                     }
-                    if is_multilingual():
+                    if is_multilingual(model_version):
                         kwargs["language_id"] = lang_id
                     return model.generate(**kwargs)
 
@@ -955,6 +981,7 @@ async def text_to_speech(request: TTSRequest):
             text=request.input,
             voice_sample_path=voice_sample_path,
             language_id=language_id,
+            model_version=request.model,
             exaggeration=request.exaggeration,
             cfg_weight=request.cfg_weight,
             temperature=request.temperature,
@@ -985,6 +1012,7 @@ async def text_to_speech(request: TTSRequest):
 )
 async def text_to_speech_with_upload(
     input: str = Form(..., description="The text to generate audio for", min_length=1, max_length=3000),
+    model: Optional[str] = Form(None, description="Model version: chatterbox-v1, chatterbox-v2, chatterbox-multilingual-v1, chatterbox-multilingual-v2"),
     voice: Optional[str] = Form("alloy", description="Voice name from library or OpenAI voice name (defaults to configured sample)"),
     response_format: Optional[str] = Form("wav", description="Audio format (always returns WAV)"),
     speed: Optional[float] = Form(1.0, description="Speed of speech (ignored)"),
@@ -1118,6 +1146,7 @@ async def text_to_speech_with_upload(
                 text=input,
                 voice_sample_path=voice_sample_path,
                 language_id=language_id,
+                model_version=model,
                 exaggeration=exaggeration,
                 cfg_weight=cfg_weight,
                 temperature=temperature
@@ -1165,6 +1194,7 @@ async def stream_text_to_speech(request: TTSRequest):
             text=request.input,
             voice_sample_path=voice_sample_path,
             language_id=language_id,
+            model_version=request.model,
             exaggeration=request.exaggeration,
             cfg_weight=request.cfg_weight,
             temperature=request.temperature,
@@ -1283,6 +1313,7 @@ async def stream_text_to_speech_with_upload(
                 text=input,
                 voice_sample_path=voice_sample_path,
                 language_id=language_id,
+                model_version=model,
                 exaggeration=exaggeration,
                 cfg_weight=cfg_weight,
                 temperature=temperature,

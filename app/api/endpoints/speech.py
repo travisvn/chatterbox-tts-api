@@ -1045,7 +1045,7 @@ async def text_to_speech_with_upload(
             if temp_voice_path and os.path.exists(temp_voice_path):
                 try:
                     os.unlink(temp_voice_path)
-                except:
+                except OSError:
                     pass
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1057,45 +1057,45 @@ async def text_to_speech_with_upload(
                 }
             )
     
-    try:
-        # Check if SSE streaming is requested
-        if stream_format == "sse":
-            # Create async generator that handles cleanup
-            async def sse_streaming_with_cleanup():
-                try:
-                    async for sse_event in generate_speech_sse(
-                        text=input,
-                        voice_sample_path=voice_sample_path,
-                        language_id=language_id,
-                        exaggeration=exaggeration,
-                        cfg_weight=cfg_weight,
-                        temperature=temperature,
-                        streaming_chunk_size=streaming_chunk_size,
-                        streaming_strategy=streaming_strategy,
-                        streaming_quality=streaming_quality
-                    ):
-                        yield sse_event
-                finally:
-                    # Clean up temporary voice file
-                    if temp_voice_path and os.path.exists(temp_voice_path):
-                        try:
-                            os.unlink(temp_voice_path)
-                            print(f"🗑️ Cleaned up temporary voice file: {temp_voice_path}")
-                        except Exception as e:
-                            print(f"⚠️ Warning: Failed to clean up temporary voice file: {e}")
-            
-            # Return SSE streaming response
-            return StreamingResponse(
-                sse_streaming_with_cleanup(),
-                media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no"  # Disable nginx buffering
-                }
-            )
-        else:
-            # Generate speech using internal function
+    # Check if SSE streaming is requested
+    if stream_format == "sse":
+        # Create async generator that handles cleanup
+        async def sse_streaming_with_cleanup():
+            try:
+                async for sse_event in generate_speech_sse(
+                    text=input,
+                    voice_sample_path=voice_sample_path,
+                    language_id=language_id,
+                    exaggeration=exaggeration,
+                    cfg_weight=cfg_weight,
+                    temperature=temperature,
+                    streaming_chunk_size=streaming_chunk_size,
+                    streaming_strategy=streaming_strategy,
+                    streaming_quality=streaming_quality
+                ):
+                    yield sse_event
+            finally:
+                # Clean up temporary voice file
+                if temp_voice_path and os.path.exists(temp_voice_path):
+                    try:
+                        os.unlink(temp_voice_path)
+                        print(f"🗑️ Cleaned up temporary voice file: {temp_voice_path}")
+                    except Exception as e:
+                        print(f"⚠️ Warning: Failed to clean up temporary voice file: {e}")
+
+        # Return SSE streaming response
+        return StreamingResponse(
+            sse_streaming_with_cleanup(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"  # Disable nginx buffering
+            }
+        )
+    else:
+        # Generate speech using internal function
+        try:
             buffer = await generate_speech_internal(
                 text=input,
                 voice_sample_path=voice_sample_path,
@@ -1104,24 +1104,23 @@ async def text_to_speech_with_upload(
                 cfg_weight=cfg_weight,
                 temperature=temperature
             )
-            
+
             # Create response
             response = StreamingResponse(
                 io.BytesIO(buffer.getvalue()),
                 media_type="audio/wav",
                 headers={"Content-Disposition": "attachment; filename=speech.wav"}
             )
-            
+
             return response
-        
-    finally:
-        # Clean up temporary voice file
-        if temp_voice_path and os.path.exists(temp_voice_path):
-            try:
-                os.unlink(temp_voice_path)
-                print(f"🗑️ Cleaned up temporary voice file: {temp_voice_path}")
-            except Exception as e:
-                print(f"⚠️ Warning: Failed to clean up temporary voice file: {e}")
+        finally:
+            # Clean up temporary voice file for non-streaming case
+            if temp_voice_path and os.path.exists(temp_voice_path):
+                try:
+                    os.unlink(temp_voice_path)
+                    print(f"🗑️ Cleaned up temporary voice file: {temp_voice_path}")
+                except Exception as e:
+                    print(f"⚠️ Warning: Failed to clean up temporary voice file: {e}")
 
 
 @router.post(
@@ -1247,7 +1246,7 @@ async def stream_text_to_speech_with_upload(
             if temp_voice_path and os.path.exists(temp_voice_path):
                 try:
                     os.unlink(temp_voice_path)
-                except:
+                except OSError:
                     pass
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

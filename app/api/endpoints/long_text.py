@@ -153,7 +153,7 @@ async def get_job_status(job_id: str):
 
         # Get job metadata and progress
         metadata = job_manager._load_job_metadata(job_id)
-        progress = await job_manager.get_progress(job_id)
+        progress = job_manager.get_progress(job_id)
 
         if not metadata or not progress:
             raise HTTPException(
@@ -459,13 +459,13 @@ async def cancel_job(job_id: str, action: LongTextJobActionType = Query(LongText
         if action == LongTextJobActionType.CANCEL:
             # Cancel the job (if running) and mark as cancelled
             await processor.pause_job(job_id)  # This cancels active processing
-            await job_manager.cancel_job(job_id)
+            job_manager.cancel_job(job_id)
             return {"message": f"Job {job_id} cancelled successfully"}
 
         elif action == LongTextJobActionType.DELETE:
             # Delete the job completely
             await processor.pause_job(job_id)  # Cancel if running
-            await job_manager.delete_job(job_id)
+            job_manager.delete_job(job_id)
             return {"message": f"Job {job_id} deleted successfully"}
 
         else:

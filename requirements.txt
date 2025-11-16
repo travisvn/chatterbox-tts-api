@@ -11,6 +11,12 @@ resemble-perth
 torch>=2.0.0,<2.7.0
 torchaudio>=2.0.0,<2.7.0
 
+# HuggingFace Hub for downloading language-specific models
+huggingface-hub>=0.20.0
+
+# SafeTensors for loading .safetensors model files
+safetensors>=0.4.0
+
 # FastAPI and ASGI server
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0

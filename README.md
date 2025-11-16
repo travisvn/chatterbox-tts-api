@@ -21,19 +21,20 @@
 
 ## Features
 
-🚀 **OpenAI-Compatible API** - Drop-in replacement for OpenAI's TTS API  
-⚡ **FastAPI Performance** - High-performance async API with automatic documentation  
-🌍 **Multilingual Support** - Generate speech in 22 languages with language-aware voice cloning  
-🎨 **React Frontend** - Includes an optional, ready-to-use web interface  
-🎭 **Voice Cloning** - Use your own voice samples for personalized speech  
-🎤 **Voice Library Management** - Upload, manage, and use custom voices by name  
-📝 **Smart Text Processing** - Automatic chunking for long texts  
-📊 **Real-time Status** - Monitor TTS progress, statistics, and request history  
-🐳 **Docker Ready** - Full containerization with persistent voice storage  
-⚙️ **Configurable** - Extensive environment variable configuration  
-🎛️ **Parameter Control** - Real-time adjustment of speech characteristics  
-📚 **Auto Documentation** - Interactive API docs at `/docs` and `/redoc`  
-🔧 **Type Safety** - Full Pydantic validation for requests and responses  
+🚀 **OpenAI-Compatible API** - Drop-in replacement for OpenAI's TTS API
+⚡ **FastAPI Performance** - High-performance async API with automatic documentation
+🌍 **Multilingual Support** - Generate speech in 22 languages with language-aware voice cloning
+🗣️ **Language-Specific Models** - Auto-download specialized models from HuggingFace for 12+ languages
+🎨 **React Frontend** - Includes an optional, ready-to-use web interface
+🎭 **Voice Cloning** - Use your own voice samples for personalized speech
+🎤 **Voice Library Management** - Upload, manage, and use custom voices by name
+📝 **Smart Text Processing** - Automatic chunking for long texts
+📊 **Real-time Status** - Monitor TTS progress, statistics, and request history
+🐳 **Docker Ready** - Full containerization with persistent voice storage
+⚙️ **Configurable** - Extensive environment variable configuration
+🎛️ **Parameter Control** - Real-time adjustment of speech characteristics
+📚 **Auto Documentation** - Interactive API docs at `/docs` and `/redoc`
+🔧 **Type Safety** - Full Pydantic validation for requests and responses
 🧠 **Memory Management** - Advanced memory monitoring and automatic cleanup
 
 > [!IMPORTANT]
@@ -220,6 +221,8 @@ The API supports multiple Chatterbox TTS model versions, allowing you to choose 
 
 ### Available Models
 
+#### Base Models
+
 | Model ID | Type | Languages | Description |
 |----------|------|-----------|-------------|
 | `chatterbox-multilingual-v2` | Multilingual | 23 | Official ResembleAI package with v2 updates (default) |
@@ -228,6 +231,32 @@ The API supports multiple Chatterbox TTS model versions, allowing you to choose 
 | `chatterbox-v1` | Standard | English | Experimental fork, English-only |
 | `tts-1` | Alias | Auto | OpenAI-compatible name (maps to default model) |
 | `tts-1-hd` | Alias | Auto | OpenAI-compatible name (maps to default model) |
+
+#### Language-Specific Models (NEW! 🌍)
+
+Language-specific models are now available with automatic download from HuggingFace! These models are trained specifically for individual languages and may provide better quality than the multilingual model.
+
+| Language | Model ID | HuggingFace Repo | Auto-Download |
+|----------|----------|------------------|---------------|
+| English | `chatterbox-en` | ResembleAI/chatterbox | ✅ |
+| German | `chatterbox-de` | stlohrey/chatterbox_de | ✅ |
+| German (havok2) | `chatterbox-de-havok2` | niobures/Chatterbox-TTS | ✅ |
+| German (SebastianBodza) | `chatterbox-de-SebastianBodza` | niobures/Chatterbox-TTS | ✅ |
+| French | `chatterbox-fr` | Thomcles/ChatterBox-fr | ✅ |
+| Italian | `chatterbox-it` | niobures/Chatterbox-TTS | ✅ |
+| Russian | `chatterbox-ru` | niobures/Chatterbox-TTS | ✅ |
+| Japanese | `chatterbox-ja` | niobures/Chatterbox-TTS | ✅ |
+| Korean | `chatterbox-ko` | niobures/Chatterbox-TTS | ✅ |
+| Norwegian | `chatterbox-no` | akhbar/chatterbox-tts-norwegian | ✅ |
+| Armenian | `chatterbox-hy` | niobures/Chatterbox-TTS | ✅ |
+| Georgian | `chatterbox-ka` | niobures/Chatterbox-TTS | ✅ |
+
+**New API Endpoints:**
+- `GET /languages` - List all supported languages with available models
+- `GET /languages/{language_code}/models` - Get models for a specific language
+- `GET /language-models` - List all language-specific models
+
+📖 **[Complete Language Models Documentation →](docs/LANGUAGE_MODELS.md)**
 
 ### Model Selection Examples
 
@@ -261,6 +290,18 @@ curl -X POST http://localhost:4123/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{"input": "Hello world", "model": "tts-1"}' \
   --output speech.wav
+
+# Use German language-specific model (auto-downloads on first use)
+curl -X POST http://localhost:4123/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input": "Guten Tag! Wie geht es Ihnen?", "model": "chatterbox-de"}' \
+  --output german_speech.wav
+
+# Use French language-specific model
+curl -X POST http://localhost:4123/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input": "Bonjour! Comment allez-vous?", "model": "chatterbox-fr"}' \
+  --output french_speech.wav
 ```
 
 ### Configuration

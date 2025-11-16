@@ -406,3 +406,5 @@ def get_model_info(model_version: Optional[str] = None) -> Dict[str, Any]:
         "model_size": engine_info.get("model_size", "Unknown"),
         "vram_required": engine_info.get("vram_required", "Unknown")
     }
+
+    return info

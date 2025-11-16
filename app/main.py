@@ -63,12 +63,15 @@ async def lifespan(app: FastAPI):
     print("Long text background processor stopped")
 
     # Cancel model initialization if it's still running
-    if not model_init_task.done():
+    if model_init_task and not model_init_task.done():
         model_init_task.cancel()
         try:
             await model_init_task
         except asyncio.CancelledError:
             pass
+        except Exception as e:
+            # Catch any other exceptions that might have occurred during initialization
+            print(f"Model initialization raised an exception: {e}")
 
 
 # Create FastAPI app
@@ -104,9 +107,25 @@ app.include_router(api_router)
 # Error handlers
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc):
+    # Ensure consistent error response format
+    # If detail is already a dict with error key, use it as is
+    # Otherwise, wrap it in the standard error format
+    if isinstance(exc.detail, dict) and "error" in exc.detail:
+        content = exc.detail
+    elif isinstance(exc.detail, dict):
+        # If it's a dict but not in error format, wrap it
+        content = {"error": exc.detail}
+    else:
+        # If it's a string, create standard error format
+        content = {
+            "error": {
+                "message": str(exc.detail),
+                "type": "http_error"
+            }
+        }
     return JSONResponse(
         status_code=exc.status_code,
-        content=exc.detail
+        content=content
     )
 
 

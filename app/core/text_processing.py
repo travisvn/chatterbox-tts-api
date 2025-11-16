@@ -352,12 +352,15 @@ def get_streaming_settings(
 
 def concatenate_audio_chunks(audio_chunks: list, sample_rate: int) -> torch.Tensor:
     """Concatenate multiple audio tensors with proper memory management"""
+    if not audio_chunks:
+        raise ValueError("Cannot concatenate empty list of audio chunks")
+
     if len(audio_chunks) == 1:
         return audio_chunks[0]
-    
+
     # Add small silence between chunks (0.1 seconds)
     silence_samples = int(0.1 * sample_rate)
-    
+
     # Create silence tensor on the same device as audio chunks
     device = audio_chunks[0].device if hasattr(audio_chunks[0], 'device') else 'cpu'
     silence = torch.zeros(1, silence_samples, device=device)

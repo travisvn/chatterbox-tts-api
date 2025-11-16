@@ -184,7 +184,7 @@ async def generate_speech_internal(
     )
     
     update_tts_status(request_id, TTSStatus.INITIALIZING, "Checking model availability")
-    
+
     model = get_model()
     if model is None:
         update_tts_status(request_id, TTSStatus.ERROR, error_message="Model not loaded")
@@ -194,6 +194,7 @@ async def generate_speech_internal(
         )
 
     # Log memory usage before processing
+    # Initialize to None so it's always defined for the finally block
     initial_memory = None
     if Config.ENABLE_MEMORY_MONITORING:
         initial_memory = get_memory_info()
@@ -452,7 +453,7 @@ async def generate_speech_internal(
                     print()
                 
                 # Calculate memory difference
-                if 'initial_memory' in locals():
+                if initial_memory is not None:
                     cpu_diff = final_memory['cpu_memory_mb'] - initial_memory['cpu_memory_mb']
                     print(f"📈 Memory change: CPU {cpu_diff:+.1f}MB", end="")
                     if torch.cuda.is_available():
@@ -498,7 +499,7 @@ async def generate_speech_streaming(
     )
     
     update_tts_status(request_id, TTSStatus.INITIALIZING, "Checking model availability (streaming)")
-    
+
     model = get_model()
     if model is None:
         update_tts_status(request_id, TTSStatus.ERROR, error_message="Model not loaded")
@@ -508,6 +509,7 @@ async def generate_speech_streaming(
         )
 
     # Log memory usage before processing
+    # Initialize to None so it's always defined for the finally block
     initial_memory = None
     if Config.ENABLE_MEMORY_MONITORING:
         initial_memory = get_memory_info()
@@ -592,18 +594,25 @@ async def generate_speech_streaming(
             # Use torch.no_grad() to prevent gradient accumulation
             with torch.no_grad():
                 # Run TTS generation in executor to avoid blocking
+                # Use a function factory to properly capture loop variables
+                def _generate_streaming_audio(text_chunk, voice_path, lang_id, exagg, cfg_w, temp):
+                    kwargs = {
+                        "text": text_chunk,
+                        "audio_prompt_path": voice_path,
+                        "exaggeration": exagg,
+                        "cfg_weight": cfg_w,
+                        "temperature": temp
+                    }
+                    if is_multilingual():
+                        kwargs["language_id"] = lang_id
+                    return model.generate(**kwargs)
+
                 audio_tensor = await loop.run_in_executor(
                     None,
-                    lambda: model.generate(
-                        text=chunk,
-                        audio_prompt_path=voice_sample_path,
-                        exaggeration=exaggeration,
-                        cfg_weight=cfg_weight,
-                        temperature=temperature,
-                        **({'language_id': language_id} if is_multilingual() else {})
-                    )
+                    _generate_streaming_audio,
+                    chunk, voice_sample_path, language_id, exaggeration, cfg_weight, temperature
                 )
-                
+
                 # Ensure tensor is on CPU for streaming
                 if hasattr(audio_tensor, 'cpu'):
                     audio_tensor = audio_tensor.cpu()
@@ -697,7 +706,7 @@ async def generate_speech_sse(
     )
     
     update_tts_status(request_id, TTSStatus.INITIALIZING, "Checking model availability (SSE streaming)")
-    
+
     model = get_model()
     if model is None:
         update_tts_status(request_id, TTSStatus.ERROR, error_message="Model not loaded")
@@ -707,6 +716,7 @@ async def generate_speech_sse(
         )
 
     # Log memory usage before processing
+    # Initialize to None so it's always defined for the finally block
     initial_memory = None
     if Config.ENABLE_MEMORY_MONITORING:
         initial_memory = get_memory_info()
@@ -791,22 +801,29 @@ async def generate_speech_sse(
                             current_chunk=i+1, total_chunks=len(chunks))
             
             print(f"SSE streaming audio for chunk {i+1}/{len(chunks)}: '{chunk[:50]}{'...' if len(chunk) > 50 else ''}'")
-            
+
             # Use torch.no_grad() to prevent gradient accumulation
             with torch.no_grad():
                 # Run TTS generation in executor to avoid blocking
+                # Use a function factory to properly capture loop variables
+                def _generate_sse_audio(text_chunk, voice_path, lang_id, exagg, cfg_w, temp):
+                    kwargs = {
+                        "text": text_chunk,
+                        "audio_prompt_path": voice_path,
+                        "exaggeration": exagg,
+                        "cfg_weight": cfg_w,
+                        "temperature": temp
+                    }
+                    if is_multilingual():
+                        kwargs["language_id"] = lang_id
+                    return model.generate(**kwargs)
+
                 audio_tensor = await loop.run_in_executor(
                     None,
-                    lambda: model.generate(
-                        text=chunk,
-                        audio_prompt_path=voice_sample_path,
-                        exaggeration=exaggeration,
-                        cfg_weight=cfg_weight,
-                        temperature=temperature,
-                        **({'language_id': language_id} if is_multilingual() else {})
-                    )
+                    _generate_sse_audio,
+                    chunk, voice_sample_path, language_id, exaggeration, cfg_weight, temperature
                 )
-                
+
                 # Ensure tensor is on CPU for processing
                 if hasattr(audio_tensor, 'cpu'):
                     audio_tensor = audio_tensor.cpu()

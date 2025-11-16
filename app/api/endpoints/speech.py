@@ -5,6 +5,7 @@ import os
 import asyncio
 import tempfile
 import logging
+import threading
 import torch
 import torchaudio as ta
 import base64
@@ -31,8 +32,9 @@ router = add_route_aliases(base_router)
 
 logger = logging.getLogger(__name__)
 
-# Request counter for memory management
+# Request counter for memory management (thread-safe)
 REQUEST_COUNTER = 0
+REQUEST_COUNTER_LOCK = threading.Lock()
 
 # Supported audio formats for voice uploads
 SUPPORTED_AUDIO_FORMATS = {'.mp3', '.wav', '.flac', '.m4a', '.ogg'}
@@ -43,7 +45,11 @@ def create_wav_header(sample_rate: int, channels: int, bits_per_sample: int, dat
     header = io.BytesIO()
     header.write(b'RIFF')
     # Use a large, but not max, value for chunk size to avoid overflow issues in some players
-    chunk_size = 36 + data_size if data_size != 0xFFFFFFFF else 0x7FFFFFFF - 36
+    # Add bounds checking to prevent integer overflow
+    if data_size != 0xFFFFFFFF:
+        chunk_size = min(0xFFFFFFFF, 36 + data_size)
+    else:
+        chunk_size = 0x7FFFFFFF - 36
     header.write(struct.pack('<I', chunk_size))
     header.write(b'WAVE')
     header.write(b'fmt ')
@@ -155,9 +161,11 @@ async def generate_speech_internal(
     custom_pauses: Optional[Dict[str, int]] = None,
 ) -> io.BytesIO:
     """Internal function to generate speech with given parameters."""
-    global REQUEST_COUNTER
-    REQUEST_COUNTER += 1
-    
+    global REQUEST_COUNTER, REQUEST_COUNTER_LOCK
+    with REQUEST_COUNTER_LOCK:
+        REQUEST_COUNTER += 1
+        current_request_count = REQUEST_COUNTER
+
     # Start TTS request tracking
     voice_source = "uploaded file" if voice_sample_path != Config.VOICE_SAMPLE_PATH else "default"
     resolved_enable_pauses = (
@@ -213,7 +221,7 @@ async def generate_speech_internal(
         initial_memory = get_memory_info()
         update_tts_status(request_id, TTSStatus.INITIALIZING, "Monitoring initial memory", 
                         memory_usage=initial_memory)
-        print(f"📊 Request #{REQUEST_COUNTER} - Initial memory: CPU {initial_memory['cpu_memory_mb']:.1f}MB", end="")
+        print(f"📊 Request #{current_request_count} - Initial memory: CPU {initial_memory['cpu_memory_mb']:.1f}MB", end="")
         if torch.cuda.is_available():
             print(f", GPU {initial_memory['gpu_memory_allocated_mb']:.1f}MB allocated")
         else:
@@ -454,13 +462,13 @@ async def generate_speech_internal(
             silence_segments.clear()
 
             # Periodic memory cleanup
-            if REQUEST_COUNTER % Config.MEMORY_CLEANUP_INTERVAL == 0:
+            if current_request_count % Config.MEMORY_CLEANUP_INTERVAL == 0:
                 cleanup_memory()
-            
+
             # Log memory usage after processing
             if Config.ENABLE_MEMORY_MONITORING:
                 final_memory = get_memory_info()
-                print(f"📊 Request #{REQUEST_COUNTER} - Final memory: CPU {final_memory['cpu_memory_mb']:.1f}MB", end="")
+                print(f"📊 Request #{current_request_count} - Final memory: CPU {final_memory['cpu_memory_mb']:.1f}MB", end="")
                 if torch.cuda.is_available():
                     print(f", GPU {final_memory['gpu_memory_allocated_mb']:.1f}MB allocated")
                 else:
@@ -493,9 +501,11 @@ async def generate_speech_streaming(
     streaming_quality: Optional[str] = None
 ) -> AsyncGenerator[bytes, None]:
     """Streaming function to generate speech with real-time chunk yielding"""
-    global REQUEST_COUNTER
-    REQUEST_COUNTER += 1
-    
+    global REQUEST_COUNTER, REQUEST_COUNTER_LOCK
+    with REQUEST_COUNTER_LOCK:
+        REQUEST_COUNTER += 1
+        current_request_count = REQUEST_COUNTER
+
     # Start TTS request tracking
     voice_source = "uploaded file" if voice_sample_path != Config.VOICE_SAMPLE_PATH else "default"
     request_id = start_tts_request(
@@ -542,7 +552,7 @@ async def generate_speech_streaming(
         initial_memory = get_memory_info()
         update_tts_status(request_id, TTSStatus.INITIALIZING, "Monitoring initial memory (streaming)", 
                         memory_usage=initial_memory)
-        print(f"📊 Streaming Request #{REQUEST_COUNTER} - Initial memory: CPU {initial_memory['cpu_memory_mb']:.1f}MB", end="")
+        print(f"📊 Streaming Request #{current_request_count} - Initial memory: CPU {initial_memory['cpu_memory_mb']:.1f}MB", end="")
         if torch.cuda.is_available():
             print(f", GPU {initial_memory['gpu_memory_allocated_mb']:.1f}MB allocated")
         else:
@@ -640,22 +650,27 @@ async def generate_speech_streaming(
                     chunk, voice_sample_path, language_id, exaggeration, cfg_weight, temperature
                 )
 
-                # Ensure tensor is on CPU for streaming
+                # Ensure tensor is on CPU for streaming (free GPU memory)
+                gpu_tensor = None
                 if hasattr(audio_tensor, 'cpu'):
-                    audio_tensor = audio_tensor.cpu()
+                    if audio_tensor.device.type != 'cpu':
+                        gpu_tensor = audio_tensor  # Keep reference to GPU tensor
+                        audio_tensor = audio_tensor.cpu()
 
                 # Convert tensor to raw 16-bit PCM data
                 # Clamp values to [-1, 1] before conversion
                 audio_tensor = torch.clamp(audio_tensor, -1.0, 1.0)
                 audio_tensor_int = (audio_tensor * 32767).to(torch.int16)
-                
+
                 # Yield the raw audio data as bytes
                 pcm_data = audio_tensor_int.numpy().tobytes()
                 yield pcm_data
-                
+
                 total_samples += audio_tensor.shape[1]
-                
-                # Clean up this chunk
+
+                # Clean up this chunk (including GPU tensor if it exists)
+                if gpu_tensor is not None:
+                    safe_delete_tensors(gpu_tensor)
                 safe_delete_tensors(audio_tensor, audio_tensor_int)
                 del pcm_data
             
@@ -686,13 +701,13 @@ async def generate_speech_streaming(
     
     finally:
         # Periodic memory cleanup
-        if REQUEST_COUNTER % Config.MEMORY_CLEANUP_INTERVAL == 0:
+        if current_request_count % Config.MEMORY_CLEANUP_INTERVAL == 0:
             cleanup_memory()
-        
+
         # Log memory usage after processing
         if Config.ENABLE_MEMORY_MONITORING:
             final_memory = get_memory_info()
-            print(f"📊 Streaming Request #{REQUEST_COUNTER} - Final memory: CPU {final_memory['cpu_memory_mb']:.1f}MB", end="")
+            print(f"📊 Streaming Request #{current_request_count} - Final memory: CPU {final_memory['cpu_memory_mb']:.1f}MB", end="")
             if torch.cuda.is_available():
                 print(f", GPU {final_memory['gpu_memory_allocated_mb']:.1f}MB allocated")
             else:
@@ -712,9 +727,11 @@ async def generate_speech_sse(
     streaming_quality: Optional[str] = None
 ) -> AsyncGenerator[str, None]:
     """Generate Server-Side Events for speech streaming (OpenAI compatible format)"""
-    global REQUEST_COUNTER
-    REQUEST_COUNTER += 1
-    
+    global REQUEST_COUNTER, REQUEST_COUNTER_LOCK
+    with REQUEST_COUNTER_LOCK:
+        REQUEST_COUNTER += 1
+        current_request_count = REQUEST_COUNTER
+
     # Start TTS request tracking
     voice_source = "uploaded file" if voice_sample_path != Config.VOICE_SAMPLE_PATH else "default"
     request_id = start_tts_request(
@@ -762,7 +779,7 @@ async def generate_speech_sse(
         initial_memory = get_memory_info()
         update_tts_status(request_id, TTSStatus.INITIALIZING, "Monitoring initial memory (SSE streaming)", 
                         memory_usage=initial_memory)
-        print(f"📊 SSE Request #{REQUEST_COUNTER} - Initial memory: CPU {initial_memory['cpu_memory_mb']:.1f}MB", end="")
+        print(f"📊 SSE Request #{current_request_count} - Initial memory: CPU {initial_memory['cpu_memory_mb']:.1f}MB", end="")
         if torch.cuda.is_available():
             print(f", GPU {initial_memory['gpu_memory_allocated_mb']:.1f}MB allocated")
         else:
@@ -864,28 +881,33 @@ async def generate_speech_sse(
                     chunk, voice_sample_path, language_id, exaggeration, cfg_weight, temperature
                 )
 
-                # Ensure tensor is on CPU for processing
+                # Ensure tensor is on CPU for processing (free GPU memory)
+                gpu_tensor = None
                 if hasattr(audio_tensor, 'cpu'):
-                    audio_tensor = audio_tensor.cpu()
+                    if audio_tensor.device.type != 'cpu':
+                        gpu_tensor = audio_tensor  # Keep reference to GPU tensor
+                        audio_tensor = audio_tensor.cpu()
 
                 # Convert tensor to raw 16-bit PCM data
                 audio_tensor = torch.clamp(audio_tensor, -1.0, 1.0)
                 audio_tensor_int = (audio_tensor * 32767).to(torch.int16)
                 pcm_data = audio_tensor_int.numpy().tobytes()
-                
+
                 # Base64 encode the raw PCM data
                 audio_base64 = base64.b64encode(pcm_data).decode('utf-8')
-                
+
                 # Create SSE event for this audio chunk
                 sse_event = SSEAudioDelta(audio=audio_base64)
-                
+
                 # Format as SSE event
                 sse_data = f"data: {sse_event.model_dump_json()}\n\n"
                 yield sse_data
-                
+
                 total_audio_chunks += 1
-                
-                # Clean up this chunk
+
+                # Clean up this chunk (including GPU tensor if it exists)
+                if gpu_tensor is not None:
+                    safe_delete_tensors(gpu_tensor)
                 safe_delete_tensors(audio_tensor, audio_tensor_int)
                 del pcm_data
             
@@ -931,13 +953,13 @@ async def generate_speech_sse(
     
     finally:
         # Periodic memory cleanup
-        if REQUEST_COUNTER % Config.MEMORY_CLEANUP_INTERVAL == 0:
+        if current_request_count % Config.MEMORY_CLEANUP_INTERVAL == 0:
             cleanup_memory()
-        
+
         # Log memory usage after processing
         if Config.ENABLE_MEMORY_MONITORING:
             final_memory = get_memory_info()
-            print(f"📊 SSE Request #{REQUEST_COUNTER} - Final memory: CPU {final_memory['cpu_memory_mb']:.1f}MB", end="")
+            print(f"📊 SSE Request #{current_request_count} - Final memory: CPU {final_memory['cpu_memory_mb']:.1f}MB", end="")
             if torch.cuda.is_available():
                 print(f", GPU {final_memory['gpu_memory_allocated_mb']:.1f}MB allocated")
             else:

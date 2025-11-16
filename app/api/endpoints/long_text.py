@@ -4,6 +4,7 @@ Long text TTS endpoints for processing texts that exceed the configured minimum 
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, status, Query
@@ -37,6 +38,8 @@ from app.core import add_route_aliases
 # Create router with aliasing support
 base_router = APIRouter()
 router = add_route_aliases(base_router)
+
+logger = logging.getLogger(__name__)
 
 
 @router.post("/audio/speech/long", response_model=LongTextJobCreateResponse)
@@ -788,7 +791,7 @@ async def get_job_details(job_id: str):
             error_log=[metadata.error] if metadata.error else [],
             performance_metrics={
                 "total_processing_time_ms": metadata.total_processing_time_ms,
-                "avg_chunk_time_ms": metadata.total_processing_time_ms / len(chunks) if chunks else 0,
+                "avg_chunk_time_ms": metadata.total_processing_time_ms / len(chunks) if len(chunks) > 0 else 0,
                 "success_rate": len([c for c in chunks if c.audio_file]) / len(chunks) if chunks else 0
             }
         )

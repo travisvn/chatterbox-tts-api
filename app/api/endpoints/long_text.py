@@ -274,7 +274,15 @@ async def download_job_audio(job_id: str):
             )
 
         # Determine media type based on format
-        media_type = "audio/mpeg" if metadata.output_format == "mp3" else "audio/wav"
+        SUPPORTED_FORMATS = {
+            "mp3": "audio/mpeg",
+            "wav": "audio/wav",
+            "flac": "audio/flac",
+            "ogg": "audio/ogg"
+        }
+        media_type = SUPPORTED_FORMATS.get(metadata.output_format, "audio/wav")
+        if metadata.output_format not in SUPPORTED_FORMATS:
+            logger.warning(f"Unknown format {metadata.output_format}, defaulting to wav")
 
         # Return file response
         return FileResponse(

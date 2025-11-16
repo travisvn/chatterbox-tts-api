@@ -157,31 +157,38 @@ class IndexTTSEngine(BaseTTSEngine):
             import torchaudio as ta
 
             # Create temporary output file
-            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_output:
-                output_path = tmp_output.name
+            output_path = None
+            try:
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_output:
+                    output_path = tmp_output.name
 
-            # Run inference
-            self.model.infer(
-                spk_audio_prompt=audio_prompt_path,
-                text=text,
-                output_path=output_path,
-                # emotion_type=emotion_type,  # Uncomment if your version supports it
-                # emotion_strength=emotion_strength,
-                # speed=speed
-            )
+                # Run inference
+                self.model.infer(
+                    spk_audio_prompt=audio_prompt_path,
+                    text=text,
+                    output_path=output_path,
+                    # emotion_type=emotion_type,  # Uncomment if your version supports it
+                    # emotion_strength=emotion_strength,
+                    # speed=speed
+                )
 
-            # Load generated audio
-            waveform, sample_rate = ta.load(output_path)
+                # Load generated audio
+                waveform, sample_rate = ta.load(output_path)
 
-            # Clean up temp file
-            os.unlink(output_path)
+                # Resample if needed
+                if sample_rate != self.sr:
+                    resampler = ta.transforms.Resample(sample_rate, self.sr)
+                    waveform = resampler(waveform)
 
-            # Resample if needed
-            if sample_rate != self.sr:
-                resampler = ta.transforms.Resample(sample_rate, self.sr)
-                waveform = resampler(waveform)
+                return waveform
 
-            return waveform
+            finally:
+                # Clean up temp file
+                if output_path and os.path.exists(output_path):
+                    try:
+                        os.unlink(output_path)
+                    except OSError:
+                        pass
 
         except Exception as e:
             raise RuntimeError(f"IndexTTS-2 generation failed: {e}")

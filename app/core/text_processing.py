@@ -394,6 +394,13 @@ def chunk_text(text: str, strategy: str = "sentence", max_length: Optional[int] 
     if effective_max <= 0:
         effective_max = max_length
 
+    # Ensure we have a valid chunk size
+    if effective_max <= 0:
+        raise ValueError(
+            f"Invalid chunk size configuration: max_length={max_length}, "
+            f"Config.MAX_TOTAL_LENGTH={Config.MAX_TOTAL_LENGTH}, effective_max={effective_max}"
+        )
+
     cleaned = text.strip()
     if not cleaned:
         return []

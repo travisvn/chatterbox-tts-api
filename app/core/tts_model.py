@@ -1,18 +1,33 @@
 """
 TTS model initialization and management with multi-version support
+Supports both multilingual models and language-specific models
 """
 
 import os
 import asyncio
 from enum import Enum
-from typing import Optional, Dict, Any, Literal
+from typing import Optional, Dict, Any, Literal, Union
 from chatterbox.tts import ChatterboxTTS
 from chatterbox.mtl_tts import ChatterboxMultilingualTTS
 from app.core.mtl import SUPPORTED_LANGUAGES
 from app.config import Config, detect_device
+from app.core.language_models import (
+    LANGUAGE_MODELS,
+    MODELS_BY_ID,
+    get_model_config,
+    is_language_model,
+    get_all_supported_languages,
+    list_all_models
+)
+from app.core.model_downloader import (
+    load_language_model,
+    is_model_cached,
+    get_model_info as get_language_model_info
+)
 
-# Model version type
-ModelVersion = Literal["chatterbox-v1", "chatterbox-v2", "chatterbox-multilingual-v1", "chatterbox-multilingual-v2"]
+# Model version type (includes both base models and language-specific models)
+BaseModelVersion = Literal["chatterbox-v1", "chatterbox-v2", "chatterbox-multilingual-v1", "chatterbox-multilingual-v2"]
+ModelVersion = Union[BaseModelVersion, str]  # str allows for language-specific model IDs
 
 # Global model registry - stores multiple loaded models
 _model_registry: Dict[str, Any] = {}
@@ -32,7 +47,7 @@ class InitializationState(Enum):
 
 
 async def load_model(model_version: str) -> Any:
-    """Load a specific model version"""
+    """Load a specific model version (base or language-specific)"""
     global _device, _model_registry, _supported_languages_by_model
 
     if model_version in _model_registry:
@@ -60,6 +75,31 @@ async def load_model(model_version: str) -> Any:
             )
             _supported_languages_by_model[model_version] = SUPPORTED_LANGUAGES.copy()
             print(f"✓ {model_version} initialized with {len(SUPPORTED_LANGUAGES)} languages")
+
+        elif is_language_model(model_version):
+            # Language-specific model from HuggingFace
+            model_config = get_model_config(model_version)
+            print(f"Loading language-specific model: {model_config.language} ({model_config.language_code})")
+            print(f"  Repository: {model_config.repo_id}")
+            print(f"  Variant: {model_config.variant}")
+
+            # Load the model (with auto-download if needed)
+            model = await loop.run_in_executor(
+                None,
+                lambda: load_language_model(
+                    model_config,
+                    cache_dir=Config.MODEL_CACHE_DIR,
+                    device=_device,
+                    auto_download=True
+                )
+            )
+
+            # Set supported language for this model
+            _supported_languages_by_model[model_version] = {
+                model_config.language_code: model_config.language
+            }
+            print(f"✓ {model_version} initialized ({model_config.language})")
+
         else:
             raise ValueError(f"Unknown model version: {model_version}")
 
@@ -224,24 +264,50 @@ def get_loaded_models() -> list[str]:
 
 def get_available_models() -> list[Dict[str, Any]]:
     """Get list of all available model versions with their status"""
-    all_models = [
+    # Base models
+    base_models = [
         "chatterbox-v1",
         "chatterbox-v2",
         "chatterbox-multilingual-v1",
         "chatterbox-multilingual-v2"
     ]
 
-    return [
-        {
+    models_list = []
+
+    # Add base models
+    for model_id in base_models:
+        models_list.append({
             "id": model_id,
             "name": model_id.replace("-", " ").title(),
             "is_multilingual": "multilingual" in model_id,
             "is_loaded": model_id in _model_registry,
             "is_default": model_id == _default_model_version,
-            "supported_languages": _supported_languages_by_model.get(model_id, {"en": "English"})
-        }
-        for model_id in all_models
-    ]
+            "supported_languages": _supported_languages_by_model.get(model_id, {"en": "English"}),
+            "model_type": "base"
+        })
+
+    # Add language-specific models
+    for lang_model in LANGUAGE_MODELS:
+        model_id = lang_model.model_id
+        model_info = get_language_model_info(lang_model, Config.MODEL_CACHE_DIR)
+
+        models_list.append({
+            "id": model_id,
+            "name": f"{lang_model.language} ({lang_model.variant})" if lang_model.variant != "default" else lang_model.language,
+            "is_multilingual": False,
+            "is_loaded": model_id in _model_registry,
+            "is_default": model_id == _default_model_version,
+            "supported_languages": {lang_model.language_code: lang_model.language},
+            "model_type": "language_specific",
+            "language_code": lang_model.language_code,
+            "repo_id": lang_model.repo_id,
+            "format": lang_model.format,
+            "variant": lang_model.variant,
+            "is_cached": model_info["is_cached"],
+            "cache_size_mb": model_info.get("cache_size_mb")
+        })
+
+    return models_list
 
 
 def get_model_info(model_version: Optional[str] = None) -> Dict[str, Any]:
@@ -252,7 +318,7 @@ def get_model_info(model_version: Optional[str] = None) -> Dict[str, Any]:
     is_loaded = model_version in _model_registry
     supported_langs = _supported_languages_by_model.get(model_version, {"en": "English"})
 
-    return {
+    info = {
         "model_version": model_version,
         "model_type": "multilingual" if "multilingual" in model_version else "standard",
         "is_multilingual": "multilingual" in model_version,
@@ -266,3 +332,84 @@ def get_model_info(model_version: Optional[str] = None) -> Dict[str, Any]:
         "loaded_models": get_loaded_models(),
         "available_models": [m["id"] for m in get_available_models()]
     }
+
+    # Add language-specific model information if applicable
+    if is_language_model(model_version):
+        model_config = get_model_config(model_version)
+        lang_info = get_language_model_info(model_config, Config.MODEL_CACHE_DIR)
+        info.update({
+            "model_type": "language_specific",
+            "language_code": model_config.language_code,
+            "repo_id": model_config.repo_id,
+            "format": model_config.format,
+            "variant": model_config.variant,
+            "is_cached": lang_info["is_cached"],
+            "cache_size_mb": lang_info.get("cache_size_mb")
+        })
+
+    return info
+
+
+def get_model_for_language(language_code: str, variant: str = "default") -> Optional[str]:
+    """
+    Get the model ID for a specific language
+
+    Args:
+        language_code: Language code (e.g., 'en', 'de', 'fr')
+        variant: Model variant (e.g., 'default', 'havok2', 'SebastianBodza')
+
+    Returns:
+        Model ID or None if not found
+    """
+    from app.core.language_models import get_models_for_language
+
+    models = get_models_for_language(language_code)
+
+    if not models:
+        return None
+
+    # Find model with matching variant
+    for model in models:
+        if model.variant == variant:
+            return model.model_id
+
+    # If no exact variant match, return first available
+    return models[0].model_id if models else None
+
+
+async def load_model_for_language(language_code: str, variant: str = "default") -> Any:
+    """
+    Load a model for a specific language
+
+    Args:
+        language_code: Language code (e.g., 'en', 'de', 'fr')
+        variant: Model variant (e.g., 'default', 'havok2', 'SebastianBodza')
+
+    Returns:
+        Loaded model instance
+
+    Raises:
+        ValueError: If no model is available for the language
+    """
+    model_id = get_model_for_language(language_code, variant)
+
+    if model_id is None:
+        raise ValueError(f"No model available for language: {language_code}")
+
+    return await get_or_load_model(model_id)
+
+
+def list_available_languages() -> Dict[str, List[str]]:
+    """
+    List all available languages with their variants
+
+    Returns:
+        Dictionary mapping language codes to lists of available variants
+    """
+    from app.core.language_models import MODELS_BY_LANGUAGE
+
+    result = {}
+    for lang_code, models in MODELS_BY_LANGUAGE.items():
+        result[lang_code] = [model.variant for model in models]
+
+    return result

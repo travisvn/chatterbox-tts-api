@@ -49,5 +49,12 @@ requests>=2.28.0
 # git clone https://github.com/boson-ai/higgs-audio && cd higgs-audio && pip install -e .
 # Note: Requires 24GB+ VRAM
 
+# VibeVoice: Install from community repository:
+# git clone https://github.com/vibevoice-community/VibeVoice.git && cd VibeVoice && pip install -e .
+# Models available on HuggingFace:
+#   - microsoft/VibeVoice-1.5B (64K context, ~90 min generation, ~3GB model, 8GB+ VRAM)
+#   - microsoft/VibeVoice-7B (32K context, ~45 min generation, ~14GB model, 16GB+ VRAM)
+# Note: Designed for long-form conversational speech synthesis with multi-speaker support
+
 # HuggingFace Hub for model downloads
 huggingface-hub>=0.20.0 

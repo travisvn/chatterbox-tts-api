@@ -11,7 +11,7 @@ from enum import Enum
 from typing import Optional, Dict, Any, Literal
 
 from app.config import Config, detect_device
-from app.core.tts_engines import BaseTTSEngine, ChatterboxEngine, IndexTTSEngine, HiggsAudioEngine
+from app.core.tts_engines import BaseTTSEngine, ChatterboxEngine, IndexTTSEngine, HiggsAudioEngine, VibeVoiceEngine
 
 # Model version type - extended to include new models
 ModelVersion = Literal[
@@ -20,7 +20,9 @@ ModelVersion = Literal[
     "chatterbox-multilingual-v1",
     "chatterbox-multilingual-v2",
     "indextts-2",
-    "higgs-audio-v2"
+    "higgs-audio-v2",
+    "vibevoice-1.5b",
+    "vibevoice-7b"
 ]
 
 # Global model registry - stores multiple loaded engines
@@ -47,6 +49,8 @@ def _get_engine_class(model_version: str):
         return IndexTTSEngine
     elif model_version == 'higgs-audio-v2':
         return HiggsAudioEngine
+    elif model_version.startswith('vibevoice'):
+        return VibeVoiceEngine
     else:
         raise ValueError(f"Unknown model version: {model_version}")
 
@@ -77,6 +81,14 @@ async def load_model(model_version: str) -> BaseTTSEngine:
             engine = HiggsAudioEngine(
                 device=_device,
                 model_cache_dir=os.path.join(Config.MODEL_CACHE_DIR, 'higgs_audio')
+            )
+        elif model_version.startswith('vibevoice'):
+            # Extract variant (1.5b or 7b)
+            variant = model_version.split('-')[1]  # vibevoice-1.5b -> 1.5b
+            engine = VibeVoiceEngine(
+                device=_device,
+                model_cache_dir=os.path.join(Config.MODEL_CACHE_DIR, 'vibevoice'),
+                model_variant=variant
             )
         else:
             raise ValueError(f"Unknown model version: {model_version}")
@@ -250,7 +262,7 @@ def is_multilingual(model_version: Optional[str] = None):
         return len(engine.get_supported_languages()) > 1
 
     # Fallback
-    return model_version in ["indextts-2", "higgs-audio-v2"]
+    return model_version in ["indextts-2", "higgs-audio-v2"] or model_version.startswith("vibevoice")
 
 
 def get_supported_languages(model_version: Optional[str] = None):
@@ -270,6 +282,21 @@ def get_supported_languages(model_version: Optional[str] = None):
         return {"en": "English", "zh": "Chinese", "ja": "Japanese", "ko": "Korean"}
     elif model_version == "higgs-audio-v2":
         return {"en": "English", "zh": "Chinese", "ja": "Japanese", "ko": "Korean"}
+    elif model_version.startswith("vibevoice"):
+        return {
+            "en": "English",
+            "zh": "Chinese (中文)",
+            "ja": "Japanese (日本語)",
+            "ko": "Korean (한국어)",
+            "es": "Spanish (Español)",
+            "fr": "French (Français)",
+            "de": "German (Deutsch)",
+            "it": "Italian (Italiano)",
+            "pt": "Portuguese (Português)",
+            "ru": "Russian (Русский)",
+            "ar": "Arabic (العربية)",
+            "hi": "Hindi (हिन्दी)"
+        }
     else:
         return {"en": "English"}
 
@@ -290,13 +317,15 @@ def get_loaded_models() -> list[str]:
 def get_available_models() -> list[Dict[str, Any]]:
     """Get list of all available model versions with their status"""
     # Base models
-    base_models = [
+    all_models = [
         "chatterbox-v1",
         "chatterbox-v2",
         "chatterbox-multilingual-v1",
         "chatterbox-multilingual-v2",
         "indextts-2",
-        "higgs-audio-v2"
+        "higgs-audio-v2",
+        "vibevoice-1.5b",
+        "vibevoice-7b"
     ]
 
     models_info = []
@@ -319,11 +348,20 @@ def get_available_models() -> list[Dict[str, Any]]:
             })
         else:
             # Provide basic info for unloaded models
-            is_multilingual = "multilingual" in model_id or model_id in ["indextts-2", "higgs-audio-v2"]
+            is_multilingual = "multilingual" in model_id or model_id in ["indextts-2", "higgs-audio-v2"] or model_id.startswith("vibevoice")
+
+            # Determine engine name
+            if model_id.startswith("vibevoice"):
+                engine_name = "vibevoice"
+            elif model_id == "higgs-audio-v2":
+                engine_name = "higgs-audio"
+            else:
+                engine_name = model_id.split("-")[0]
+
             models_info.append({
                 "id": model_id,
                 "name": model_id.replace("-", " ").title(),
-                "engine": model_id.split("-")[0] if model_id != "higgs-audio-v2" else "higgs-audio",
+                "engine": engine_name,
                 "is_multilingual": is_multilingual,
                 "is_loaded": False,
                 "is_default": model_id == _default_model_version,

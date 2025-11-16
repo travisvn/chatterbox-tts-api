@@ -289,7 +289,8 @@ def get_loaded_models() -> list[str]:
 
 def get_available_models() -> list[Dict[str, Any]]:
     """Get list of all available model versions with their status"""
-    all_models = [
+    # Base models
+    base_models = [
         "chatterbox-v1",
         "chatterbox-v2",
         "chatterbox-multilingual-v1",
@@ -350,7 +351,7 @@ def get_model_info(model_version: Optional[str] = None) -> Dict[str, Any]:
         engine_info = {}
         supported_langs = get_supported_languages(model_version)
 
-    return {
+    info = {
         "model_version": model_version,
         "model_type": engine_info.get("engine", model_version.split("-")[0]),
         "is_multilingual": is_multilingual(model_version),

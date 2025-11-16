@@ -38,4 +38,16 @@ psutil>=5.9.0
 pydub>=0.25.1
 
 # Testing Dependencies
-requests>=2.28.0 
+requests>=2.28.0
+
+# Additional TTS Engines (optional - will be lazy-loaded on first use)
+# IndexTTS-2: Install with `pip install indextts` and download models with:
+# hf download IndexTeam/IndexTTS-2 --local-dir=models/indextts/checkpoints
+# indextts; python_version>='3.10'
+
+# Higgs Audio V2: Install from source:
+# git clone https://github.com/boson-ai/higgs-audio && cd higgs-audio && pip install -e .
+# Note: Requires 24GB+ VRAM
+
+# HuggingFace Hub for model downloads
+huggingface-hub>=0.20.0 

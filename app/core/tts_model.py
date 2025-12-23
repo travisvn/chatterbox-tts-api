@@ -19,6 +19,9 @@ _initialization_error = None
 _initialization_progress = ""
 _is_multilingual = None
 _supported_languages = {}
+_last_used = None
+_idle_timeout = getattr(Config, "MODEL_IDLE_TIMEOUT", 60)  # 10 minutes default
+_unload_task = None
 
 
 class InitializationState(Enum):
@@ -26,7 +29,7 @@ class InitializationState(Enum):
     INITIALIZING = "initializing"
     READY = "ready"
     ERROR = "error"
-
+    
 
 async def initialize_model():
     """Initialize the Chatterbox TTS model"""
@@ -109,6 +112,7 @@ async def initialize_model():
         _initialization_progress = "Model ready"
         _initialization_error = None
         print(f"✓ Model initialized successfully on {_device}")
+
         return _model
         
     except Exception as e:
@@ -118,11 +122,48 @@ async def initialize_model():
         print(f"✗ Failed to initialize model: {e}")
         raise e
 
+async def _idle_monitor():
+    global _last_used
+    while True:
+        await asyncio.sleep(10)  # check every 10 seconds
+        if _last_used is not None:
+            idle_time = asyncio.get_event_loop().time() - _last_used
+            if idle_time > _idle_timeout:
+                print(f"Unloading model after {idle_time:.0f}s idle...")
+                await unload_model()
 
-def get_model():
-    """Get the current model instance"""
+
+async def get_model():
+    """Get the current model instance, auto-load if needed"""
+    global _model, _last_used
+
+    if _model is None or not is_ready():
+        await initialize_model()   # load on demand
+
+    _last_used = asyncio.get_event_loop().time()
+    print(_model)
     return _model
 
+
+async def unload_model():
+    """Unload model from memory to save resources"""
+    global _model, _initialization_state, _last_used, _initialization_progress, _initialization_error
+
+    if _model is not None:
+        try:
+            import gc, torch
+            del _model
+            gc.collect()
+            if _device == "cuda":
+                torch.cuda.empty_cache()
+            print("✓ Model successfully unloaded from memory")
+        except Exception as e:
+            print(f"⚠ Error during model unload: {e}")
+    # Mark as unloaded
+    _model = None
+    _last_used = None
+    _initialization_state = InitializationState.READY.value  # <-- always ready for health
+    _initialization_progress = "Model not loaded"
 
 def get_device():
     """Get the current device"""
@@ -168,7 +209,6 @@ def supports_language(language_id: str):
     """Check if the model supports a specific language"""
     return language_id in _supported_languages
 
-
 def get_model_info() -> Dict[str, Any]:
     """Get comprehensive model information"""
     return {
@@ -177,6 +217,9 @@ def get_model_info() -> Dict[str, Any]:
         "supported_languages": _supported_languages,
         "language_count": len(_supported_languages),
         "device": _device,
-        "is_ready": is_ready(),
-        "initialization_state": _initialization_state
+        "is_ready": _model is not None,
+        "backend_ready": True,
+        "initialization_state": _initialization_state,
+        "initialization_progress": _initialization_progress,
+        "initialization_error": _initialization_error
     }

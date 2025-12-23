@@ -54,7 +54,7 @@ async def get_supported_languages_endpoint():
         )
 
 @router.get(
-    "/voices",
+    "/audio/voices",
     responses={
         200: {"description": "List of voices in library"},
         500: {"model": ErrorResponse}

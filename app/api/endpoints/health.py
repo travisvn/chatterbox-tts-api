@@ -10,17 +10,18 @@ from app.core import get_memory_info, add_route_aliases
 from app.core.tts_model import (
     get_model, 
     get_device, 
+    detect_device,
     get_initialization_state,
     get_initialization_progress,
     get_initialization_error,
     is_ready,
-    is_initializing
+    is_initializing,
+    _model
 )
 
 # Create router with aliasing support
 base_router = APIRouter()
 router = add_route_aliases(base_router)
-
 
 @router.get(
     "/health",
@@ -29,27 +30,31 @@ router = add_route_aliases(base_router)
     description="Check API health and model status"
 )
 async def health_check():
-    """Health check endpoint - always responds even during initialization"""
-    model = get_model()
-    device = get_device()
+    """Health check endpoint - always responds immediately, never loads model"""
+
+    # Check if model object exists
+    from app.core.tts_model import _model, detect_device
+
+    model_loaded = _model is not None  # True if model exists, False if not
+
+    # Always report ready
+    status = "ready"
+
+    device = detect_device() or "cpu"
+
+    from app.core.tts_model import (
+        get_initialization_state,
+        get_initialization_progress,
+        get_initialization_error
+    )
     init_state = get_initialization_state()
     init_progress = get_initialization_progress()
     init_error = get_initialization_error()
-    
-    # Determine status based on initialization state
-    if init_state == "ready":
-        status = "healthy"
-    elif init_state == "initializing":
-        status = "initializing"
-    elif init_state == "error":
-        status = "error"
-    else:
-        status = "starting"
-    
+
     return HealthResponse(
         status=status,
-        model_loaded=model is not None,
-        device=device or "unknown",
+        model_loaded=model_loaded,
+        device=device,
         config={
             "max_chunk_length": Config.MAX_CHUNK_LENGTH,
             "max_total_length": Config.MAX_TOTAL_LENGTH,
@@ -63,7 +68,6 @@ async def health_check():
         initialization_progress=init_progress,
         initialization_error=init_error
     )
-
 
 @router.get(
     "/ping",

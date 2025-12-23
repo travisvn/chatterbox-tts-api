@@ -168,7 +168,8 @@ async def generate_speech_internal(
     
     update_tts_status(request_id, TTSStatus.INITIALIZING, "Checking model availability")
     
-    model = get_model()
+    model = await get_model()   # ✅ correct
+
     if model is None:
         update_tts_status(request_id, TTSStatus.ERROR, error_message="Model not loaded")
         raise HTTPException(
@@ -390,8 +391,8 @@ async def generate_speech_streaming(
     )
     
     update_tts_status(request_id, TTSStatus.INITIALIZING, "Checking model availability (streaming)")
-    
-    model = get_model()
+
+    model = await get_model()
     if model is None:
         update_tts_status(request_id, TTSStatus.ERROR, error_message="Model not loaded")
         raise HTTPException(
@@ -589,8 +590,8 @@ async def generate_speech_sse(
     )
     
     update_tts_status(request_id, TTSStatus.INITIALIZING, "Checking model availability (SSE streaming)")
-    
-    model = get_model()
+
+    model = await get_model()
     if model is None:
         update_tts_status(request_id, TTSStatus.ERROR, error_message="Model not loaded")
         raise HTTPException(

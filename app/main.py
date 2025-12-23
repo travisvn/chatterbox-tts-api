@@ -6,22 +6,30 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-
+from fastapi.staticfiles import StaticFiles
+import os
+import mimetypes
+import logging
 from app.core.tts_model import initialize_model
 from app.core.voice_library import get_voice_library
 from app.core.background_tasks import start_background_processor, stop_background_processor
 from app.api.router import api_router
 from app.config import Config
 from app.core.version import get_version
-
-
+from app.core.tts_model import unload_model, _idle_monitor   # add import
 ascii_art = r"""
-  ____ _           _   _            _               
- / ___| |__   __ _| |_| |_ ___ _ __| |__   _____  __
-| |   | '_ \ / _` | __| __/ _ \ '__| '_ \ / _ \ \/ /
-| |___| | | | (_| | |_| ||  __/ |  | |_) | (_) >  < 
- \____|_| |_|\__,_|\__|\__\___|_|  |_.__/ \___/_/\_\
-                                                    
+
+
+  /$$$$$$  /$$                   /$$     /$$                                 /$$$$$$$                     
+ /$$__  $$| $$                  | $$    | $$                                | $$__  $$                    
+| $$  \__/| $$$$$$$   /$$$$$$  /$$$$$$ /$$$$$$    /$$$$$$   /$$$$$$         | $$  \ $$  /$$$$$$  /$$   /$$
+| $$      | $$__  $$ |____  $$|_  $$_/|_  $$_/   /$$__  $$ /$$__  $$ /$$$$$$| $$$$$$$  /$$__  $$|  $$ /$$/
+| $$      | $$  \ $$  /$$$$$$$  | $$    | $$    | $$$$$$$$| $$  \__/|______/| $$__  $$| $$  \ $$ \  $$$$/ 
+| $$    $$| $$  | $$ /$$__  $$  | $$ /$$| $$ /$$| $$_____/| $$              | $$  \ $$| $$  | $$  >$$  $$ 
+|  $$$$$$/| $$  | $$|  $$$$$$$  |  $$$$/|  $$$$/|  $$$$$$$| $$              | $$$$$$$/|  $$$$$$/ /$$/\  $$
+ \______/ |__/  |__/ \_______/   \___/   \___/   \_______/|__/              |_______/  \______/ |__/  \__/                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     
 """
 
 
@@ -34,9 +42,15 @@ async def lifespan(app: FastAPI):
     # Start model initialization in the background
     # This allows the server to respond to health checks immediately
     # while the model loads asynchronously
+
     import asyncio
-    model_init_task = asyncio.create_task(initialize_model())
-    
+
+    # ❌ remove this (no eager load)
+    # model_init_task = asyncio.create_task(initialize_model())
+
+    # ✅ start idle monitor
+    asyncio.create_task(_idle_monitor())
+
     # Initialize voice library to restore default voice settings
     print("Initializing voice library...")
     voice_lib = get_voice_library()
@@ -63,12 +77,13 @@ async def lifespan(app: FastAPI):
     print("Long text background processor stopped")
 
     # Cancel model initialization if it's still running
-    if not model_init_task.done():
-        model_init_task.cancel()
-        try:
-            await model_init_task
-        except asyncio.CancelledError:
-            pass
+    # ✅ force unload model
+    await unload_model()
+
+    # ❌ remove cancel logic since no startup task
+    # if not model_init_task.done():
+    #     model_init_task.cancel()
+    #     ...
 
 
 # Create FastAPI app
@@ -99,6 +114,23 @@ app.add_middleware(
 
 # Include the main router
 app.include_router(api_router)
+
+# --- ✅ Serve frontend build if present ---
+FRONTEND_BUILD_DIR = os.path.join("frontend", "dist")
+
+if os.path.exists(FRONTEND_BUILD_DIR):
+    mimetypes.add_type("text/javascript", ".js")  # fix .js MIME type
+    app.mount(
+        "/",
+        StaticFiles(directory=FRONTEND_BUILD_DIR, html=True),
+        name="spa-static-files",
+    )
+    print(f"Serving frontend from: {FRONTEND_BUILD_DIR}")
+else:
+    print(
+        f"Frontend build directory not found at '{FRONTEND_BUILD_DIR}'. Serving API only."
+    )
+
 
 
 # Error handlers

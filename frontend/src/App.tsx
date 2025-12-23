@@ -3,6 +3,7 @@ import { Route, Switch } from 'wouter';
 import { Github, MessageCircle } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import ThemeToggle from './components/theme-toggle';
+import ModelToggle from './components/ModelToggle'; // <-- import
 import Navigation from './components/Navigation';
 import TTSPage from './pages/TTSPage';
 import MemoryPage from './pages/MemoryPage';
@@ -41,6 +42,7 @@ function App() {
             </div>
             <Navigation />
           </div>
+           <ModelToggle />   {/* <-- Added button */}
           <ThemeToggle />
         </div>
       </header>

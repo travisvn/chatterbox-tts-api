@@ -49,7 +49,7 @@ class Config:
     MEMORY_CLEANUP_INTERVAL = int(os.getenv('MEMORY_CLEANUP_INTERVAL', 5))
     CUDA_CACHE_CLEAR_INTERVAL = int(os.getenv('CUDA_CACHE_CLEAR_INTERVAL', 3))
     ENABLE_MEMORY_MONITORING = os.getenv('ENABLE_MEMORY_MONITORING', 'true').lower() == 'true'
-    
+    MODEL_IDLE_TIMEOUT = int(os.getenv("MODEL_IDLE_TIMEOUT",60))
     # CORS settings
     CORS_ORIGINS = os.getenv('CORS_ORIGINS', '*')
     
@@ -95,3 +95,4 @@ def detect_device():
         return 'mps'
     else:
         return 'cpu' 
+    

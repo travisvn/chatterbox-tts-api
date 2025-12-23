@@ -10,6 +10,8 @@ export interface TTSRequest {
   streaming_chunk_size?: number;
   streaming_strategy?: 'sentence' | 'paragraph' | 'fixed' | 'word';
   streaming_quality?: 'fast' | 'balanced' | 'high';
+  enable_pauses?: boolean;
+  custom_pauses?: Record<string, number>;
 }
 
 export interface HealthResponse {
@@ -262,10 +264,16 @@ export interface LongTextJobMetadata {
   };
   voice: string;
   parameters: {
-    exaggeration: number;
-    cfg_weight: number;
-    temperature: number;
-    language: string;
+    exaggeration?: number;
+    cfg_weight?: number;
+    temperature?: number;
+    output_format?: string;
+    chunking_strategy?: 'sentence' | 'paragraph' | 'word' | 'fixed';
+    chunk_size?: number;
+    quality_preset?: 'fast' | 'balanced' | 'high';
+    silence_padding_ms?: number;
+    language?: string;
+    [key: string]: unknown;
   };
   processing: {
     started_at?: string;
@@ -328,7 +336,12 @@ export interface LongTextRequest {
   voice_file?: File;
   output_format?: 'mp3' | 'wav';
   silence_padding_ms?: number;
+  chunking_strategy?: 'sentence' | 'paragraph' | 'word' | 'fixed';
+  quality_preset?: 'fast' | 'balanced' | 'high';
+  chunk_size?: number;
   session_id?: string;
+  enable_pauses?: boolean;
+  custom_pauses?: Record<string, number>;
 }
 
 export interface LongTextSSEEvent {

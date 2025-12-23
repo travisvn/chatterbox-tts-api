@@ -352,9 +352,12 @@ def get_streaming_settings(
 
 def concatenate_audio_chunks(audio_chunks: list, sample_rate: int) -> torch.Tensor:
     """Concatenate multiple audio tensors with proper memory management"""
+    if not audio_chunks:
+        raise ValueError("Cannot concatenate empty list of audio chunks")
+
     if len(audio_chunks) == 1:
         return audio_chunks[0]
-    
+
     # Add small silence between chunks (0.1 seconds)
     silence_samples = int(0.1 * sample_rate)
     
@@ -380,57 +383,165 @@ def concatenate_audio_chunks(audio_chunks: list, sample_rate: int) -> torch.Tens
     return concatenated
 
 
-def split_text_for_long_generation(text: str,
-                                   max_chunk_size: Optional[int] = None,
-                                   overlap_chars: int = 0) -> List[LongTextChunk]:
-    """
-    Split long text into chunks optimized for TTS generation with intelligent boundaries.
+def chunk_text(text: str, strategy: str = "sentence", max_length: Optional[int] = None) -> List[str]:
+    """Split text according to the requested strategy."""
 
-    This function implements a hierarchical splitting strategy:
-    1. First attempt: Split at paragraph boundaries (double newlines)
-    2. Second attempt: Split at sentence boundaries (. ! ?)
-    3. Third attempt: Split at clause boundaries (, ; : - —)
-    4. Last resort: Split at word boundaries
+    if max_length is None or max_length <= 0:
+        max_length = Config.LONG_TEXT_CHUNK_SIZE
 
-    Args:
-        text: Input text to split (should be > 3000 characters)
-        max_chunk_size: Maximum characters per chunk (defaults to Config.LONG_TEXT_CHUNK_SIZE)
-        overlap_chars: Number of characters to overlap between chunks for context
+    # Respect the standard TTS hard limit with a small buffer to avoid boundary errors
+    effective_max = min(max_length, Config.MAX_TOTAL_LENGTH - 100)
+    if effective_max <= 0:
+        effective_max = max_length
 
-    Returns:
-        List of LongTextChunk objects with metadata
-    """
-    if max_chunk_size is None:
-        max_chunk_size = Config.LONG_TEXT_CHUNK_SIZE
+    # Ensure we have a valid chunk size
+    if effective_max <= 0:
+        raise ValueError(
+            f"Invalid chunk size configuration: max_length={max_length}, "
+            f"Config.MAX_TOTAL_LENGTH={Config.MAX_TOTAL_LENGTH}, effective_max={effective_max}"
+        )
 
-    # Ensure we don't exceed the regular TTS limit
-    effective_max = min(max_chunk_size, Config.MAX_TOTAL_LENGTH - 100)  # Leave some buffer
+    cleaned = text.strip()
+    if not cleaned:
+        return []
 
-    chunks = []
-    chunk_index = 0
+    normalized_strategy = (strategy or "sentence").lower()
+
+    if normalized_strategy == "fixed":
+        return [
+            chunk.strip()
+            for chunk in (cleaned[i : i + effective_max] for i in range(0, len(cleaned), effective_max))
+            if chunk.strip()
+        ]
+
+    if normalized_strategy == "paragraph":
+        return _chunk_by_paragraphs(cleaned, effective_max)
+
+    if normalized_strategy == "word":
+        return _chunk_by_words(cleaned, effective_max)
+
+    # Default strategy combines hierarchical paragraph/sentence/word splitting
+    return _chunk_hierarchical(cleaned, effective_max)
+
+
+def _chunk_by_paragraphs(text: str, max_length: int) -> List[str]:
+    """Chunk text prioritising paragraph boundaries."""
+
+    paragraphs = [segment.strip() for segment in re.split(r"\n\s*\n", text) if segment.strip()]
+    if not paragraphs:
+        return _chunk_hierarchical(text, max_length)
+
+    chunks: List[str] = []
+    current: Optional[str] = None
+
+    for paragraph in paragraphs:
+        if current is None:
+            current = paragraph
+            continue
+
+        candidate = f"{current}\n\n{paragraph}"
+        if len(candidate) <= max_length:
+            current = candidate
+        else:
+            chunks.extend(_chunk_hierarchical(current, max_length))
+            current = paragraph
+
+    if current:
+        chunks.extend(_chunk_hierarchical(current, max_length))
+
+    return chunks
+
+
+def _chunk_by_words(text: str, max_length: int) -> List[str]:
+    """Chunk text using word boundaries."""
+
+    words = text.split()
+    if not words:
+        return []
+
+    chunks: List[str] = []
+    current_words: List[str] = []
+    current_length = 0
+
+    for word in words:
+        # Include a space when the current chunk already has words
+        additional_length = len(word) if not current_words else len(word) + 1
+
+        if current_words and current_length + additional_length > max_length:
+            chunk = " ".join(current_words).strip()
+            if chunk:
+                chunks.append(chunk)
+            current_words = [word]
+            current_length = len(word)
+        else:
+            current_words.append(word)
+            current_length += additional_length
+
+    if current_words:
+        chunk = " ".join(current_words).strip()
+        if chunk:
+            chunks.append(chunk)
+
+    refined_chunks: List[str] = []
+    for chunk in chunks:
+        if len(chunk) > max_length:
+            refined_chunks.extend(_chunk_hierarchical(chunk, max_length))
+        else:
+            refined_chunks.append(chunk)
+
+    return refined_chunks
+
+
+def _chunk_hierarchical(text: str, max_length: int) -> List[str]:
+    """Hierarchical chunking that mirrors the legacy behaviour."""
+
+    chunks: List[str] = []
     remaining_text = text.strip()
 
     while remaining_text:
-        if len(remaining_text) <= effective_max:
-            # Last chunk
-            chunk_text = remaining_text
-            remaining_text = ""
-        else:
-            # Find the best split point
-            chunk_text, remaining_text = _find_best_split_point(
-                remaining_text, effective_max, overlap_chars
+        if len(remaining_text) <= max_length:
+            chunks.append(remaining_text)
+            break
+
+        chunk_text, remaining = _find_best_split_point(remaining_text, max_length, 0)
+
+        if not chunk_text:
+            chunk_text = remaining_text[:max_length].strip()
+            remaining = remaining_text[max_length:].strip()
+
+        chunks.append(chunk_text)
+        remaining_text = remaining
+
+    return [chunk for chunk in chunks if chunk]
+
+
+def split_text_for_long_generation(
+    text: str,
+    max_chunk_size: Optional[int] = None,
+    strategy: Optional[str] = None,
+) -> List[LongTextChunk]:
+    """Split long text into structured chunks ready for generation."""
+
+    if max_chunk_size is None or max_chunk_size <= 0:
+        max_chunk_size = Config.LONG_TEXT_CHUNK_SIZE
+
+    resolved_strategy = strategy or Config.LONG_TEXT_CHUNKING_STRATEGY
+
+    chunk_strings = chunk_text(text, strategy=resolved_strategy, max_length=max_chunk_size)
+    if not chunk_strings:
+        return []
+
+    chunks: List[LongTextChunk] = []
+    for index, chunk_body in enumerate(chunk_strings):
+        preview = chunk_body[:50] + ("..." if len(chunk_body) > 50 else "")
+        chunks.append(
+            LongTextChunk(
+                index=index,
+                text=chunk_body,
+                text_preview=preview,
+                character_count=len(chunk_body),
             )
-
-        # Create chunk metadata
-        chunk = LongTextChunk(
-            index=chunk_index,
-            text=chunk_text,
-            text_preview=chunk_text[:50] + ("..." if len(chunk_text) > 50 else ""),
-            character_count=len(chunk_text)
         )
-
-        chunks.append(chunk)
-        chunk_index += 1
 
     return chunks
 
@@ -562,13 +673,18 @@ def _split_at_words(text: str, max_length: int, overlap_chars: int) -> Tuple[str
     return chunk_text, remaining_text
 
 
-def estimate_processing_time(text_length: int, avg_chars_per_second: float = 25.0) -> int:
+def estimate_processing_time(
+    text_length: int,
+    avg_chars_per_second: float = 25.0,
+    chunk_size: Optional[int] = None,
+) -> int:
     """
     Estimate processing time for long text TTS generation.
 
     Args:
         text_length: Total characters in text
         avg_chars_per_second: Average processing rate (characters per second)
+        chunk_size: Optional chunk size override used for estimation
 
     Returns:
         Estimated processing time in seconds
@@ -576,8 +692,12 @@ def estimate_processing_time(text_length: int, avg_chars_per_second: float = 25.
     # Base estimate + overhead for chunking and concatenation
     base_time = text_length / avg_chars_per_second
 
+    effective_chunk_size = chunk_size or Config.LONG_TEXT_CHUNK_SIZE
+    if effective_chunk_size <= 0:
+        effective_chunk_size = Config.LONG_TEXT_CHUNK_SIZE
+
     # Add overhead: 5 seconds for setup + 2 seconds per chunk + 10 seconds for concatenation
-    num_chunks = max(1, (text_length + Config.LONG_TEXT_CHUNK_SIZE - 1) // Config.LONG_TEXT_CHUNK_SIZE)
+    num_chunks = max(1, (text_length + effective_chunk_size - 1) // effective_chunk_size)
     overhead = 5 + (num_chunks * 2) + 10
 
     return int(base_time + overhead)
@@ -594,12 +714,19 @@ def validate_long_text_input(text: str) -> Tuple[bool, str]:
         return False, "Input text cannot be empty"
 
     text_length = len(text.strip())
+    min_length = Config.get_long_text_min_length()
+    max_length = Config.get_long_text_max_length()
 
-    if text_length <= Config.MAX_TOTAL_LENGTH:
-        return False, f"Text is {text_length} characters. Use regular TTS for texts under {Config.MAX_TOTAL_LENGTH} characters"
+    if text_length < min_length:
+        return False, (
+            "Text must be at least {} characters for long-text processing (received {} characters)".format(
+                min_length,
+                text_length,
+            )
+        )
 
-    if text_length > Config.LONG_TEXT_MAX_LENGTH:
-        return False, f"Text is too long ({text_length} characters). Maximum allowed: {Config.LONG_TEXT_MAX_LENGTH}"
+    if text_length > max_length:
+        return False, f"Text is too long ({text_length} characters). Maximum allowed: {max_length}"
 
     # Check for excessive repetition (potential spam/abuse)
     words = text.split()

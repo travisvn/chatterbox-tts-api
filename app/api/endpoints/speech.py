@@ -1,11 +1,11 @@
-"""
-Text-to-speech endpoint
-"""
+"""Text-to-speech endpoint."""
 
 import io
 import os
 import asyncio
 import tempfile
+import logging
+import threading
 import torch
 import torchaudio as ta
 import base64
@@ -22,15 +22,19 @@ from app.core import (
     split_text_into_chunks, concatenate_audio_chunks, add_route_aliases,
     TTSStatus, start_tts_request, update_tts_status, get_voice_library
 )
-from app.core.tts_model import get_model, is_multilingual
+from app.core.pause_handler import PauseHandler
+from app.core.tts_model import get_or_load_model, is_multilingual
 from app.core.text_processing import split_text_for_streaming, get_streaming_settings
 
 # Create router with aliasing support
 base_router = APIRouter()
 router = add_route_aliases(base_router)
 
-# Request counter for memory management
+logger = logging.getLogger(__name__)
+
+# Request counter for memory management (thread-safe)
 REQUEST_COUNTER = 0
+REQUEST_COUNTER_LOCK = threading.Lock()
 
 # Supported audio formats for voice uploads
 SUPPORTED_AUDIO_FORMATS = {'.mp3', '.wav', '.flac', '.m4a', '.ogg'}
@@ -41,7 +45,11 @@ def create_wav_header(sample_rate: int, channels: int, bits_per_sample: int, dat
     header = io.BytesIO()
     header.write(b'RIFF')
     # Use a large, but not max, value for chunk size to avoid overflow issues in some players
-    chunk_size = 36 + data_size if data_size != 0xFFFFFFFF else 0x7FFFFFFF - 36
+    # Add bounds checking to prevent integer overflow
+    if data_size != 0xFFFFFFFF:
+        chunk_size = min(0xFFFFFFFF, 36 + data_size)
+    else:
+        chunk_size = 0x7FFFFFFF - 36
     header.write(struct.pack('<I', chunk_size))
     header.write(b'WAVE')
     header.write(b'fmt ')
@@ -145,16 +153,32 @@ async def generate_speech_internal(
     text: str,
     voice_sample_path: str,
     language_id: str = "en",
+    model_version: Optional[str] = None,
     exaggeration: Optional[float] = None,
     cfg_weight: Optional[float] = None,
-    temperature: Optional[float] = None
+    temperature: Optional[float] = None,
+    enable_pauses: Optional[bool] = None,
+    custom_pauses: Optional[Dict[str, int]] = None,
 ) -> io.BytesIO:
-    """Internal function to generate speech with given parameters"""
-    global REQUEST_COUNTER
-    REQUEST_COUNTER += 1
-    
+    """Internal function to generate speech with given parameters."""
+    global REQUEST_COUNTER, REQUEST_COUNTER_LOCK
+    with REQUEST_COUNTER_LOCK:
+        REQUEST_COUNTER += 1
+        current_request_count = REQUEST_COUNTER
+
     # Start TTS request tracking
     voice_source = "uploaded file" if voice_sample_path != Config.VOICE_SAMPLE_PATH else "default"
+    resolved_enable_pauses = (
+        Config.ENABLE_PUNCTUATION_PAUSES if enable_pauses is None else bool(enable_pauses)
+    )
+    pause_overrides = {}
+    if custom_pauses:
+        for key, value in custom_pauses.items():
+            try:
+                pause_overrides[str(key)] = int(value)
+            except (TypeError, ValueError):
+                logger.debug("Ignoring invalid custom pause override %r=%r", key, value)
+
     request_id = start_tts_request(
         text=text,
         voice_source=voice_source,
@@ -162,13 +186,27 @@ async def generate_speech_internal(
             "exaggeration": exaggeration,
             "cfg_weight": cfg_weight,
             "temperature": temperature,
-            "voice_sample_path": voice_sample_path
+            "voice_sample_path": voice_sample_path,
+            "enable_pauses": resolved_enable_pauses,
+            "custom_pauses": pause_overrides,
         }
     )
     
-    update_tts_status(request_id, TTSStatus.INITIALIZING, "Checking model availability")
-    
-    model = get_model()
+    update_tts_status(request_id, TTSStatus.INITIALIZING, "Loading model")
+
+    # Map OpenAI model names to our model versions
+    if model_version in ["tts-1", "tts-1-hd"]:
+        model_version = None  # Use default
+
+    try:
+        model = await get_or_load_model(model_version)
+    except Exception as e:
+        update_tts_status(request_id, TTSStatus.ERROR, error_message=f"Failed to load model: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": {"message": f"Failed to load model: {str(e)}", "type": "model_error"}}
+        )
+
     if model is None:
         update_tts_status(request_id, TTSStatus.ERROR, error_message="Model not loaded")
         raise HTTPException(
@@ -177,12 +215,13 @@ async def generate_speech_internal(
         )
 
     # Log memory usage before processing
+    # Initialize to None so it's always defined for the finally block
     initial_memory = None
     if Config.ENABLE_MEMORY_MONITORING:
         initial_memory = get_memory_info()
         update_tts_status(request_id, TTSStatus.INITIALIZING, "Monitoring initial memory", 
                         memory_usage=initial_memory)
-        print(f"📊 Request #{REQUEST_COUNTER} - Initial memory: CPU {initial_memory['cpu_memory_mb']:.1f}MB", end="")
+        print(f"📊 Request #{current_request_count} - Initial memory: CPU {initial_memory['cpu_memory_mb']:.1f}MB", end="")
         if torch.cuda.is_available():
             print(f", GPU {initial_memory['gpu_memory_allocated_mb']:.1f}MB allocated")
         else:
@@ -203,41 +242,107 @@ async def generate_speech_internal(
             }
         )
 
-    audio_chunks = []
+    audio_chunks: List[Any] = []
     final_audio = None
+    final_audio_cpu = None
     buffer = None
-    
+    assembled_segments: List[Any] = []
+    silence_segments: List[Any] = []
+
     try:
         # Get parameters with defaults
         exaggeration = exaggeration if exaggeration is not None else Config.EXAGGERATION
         cfg_weight = cfg_weight if cfg_weight is not None else Config.CFG_WEIGHT
         temperature = temperature if temperature is not None else Config.TEMPERATURE
-        
-        # Split text into chunks
-        update_tts_status(request_id, TTSStatus.CHUNKING, "Splitting text into chunks")
-        chunks = split_text_into_chunks(text, Config.MAX_CHUNK_LENGTH)
-        
+
+        # Prepare text segments (respect pause settings)
+        update_tts_status(request_id, TTSStatus.CHUNKING, "Preparing text segments")
+
+        if resolved_enable_pauses:
+            pause_defaults = {
+                "...": Config.ELLIPSIS_PAUSE_MS,
+                "—": Config.EM_DASH_PAUSE_MS,
+                "–": Config.EN_DASH_PAUSE_MS,
+                r"\.": Config.PERIOD_PAUSE_MS,
+                "\n\n": Config.PARAGRAPH_PAUSE_MS,
+                "\n": Config.LINE_BREAK_PAUSE_MS,
+            }
+            pause_defaults.update(pause_overrides)
+
+            pause_handler = PauseHandler(
+                enable_pauses=True,
+                custom_pauses=pause_defaults,
+                min_pause_ms=Config.MIN_PAUSE_MS,
+                max_pause_ms=Config.MAX_PAUSE_MS,
+            )
+
+            pause_chunks = pause_handler.process(text)
+            tts_segments: List[Dict[str, Any]] = []
+            for pause_chunk in pause_chunks:
+                sub_chunks = split_text_into_chunks(pause_chunk.text, Config.MAX_CHUNK_LENGTH)
+                for idx, sub_chunk in enumerate(sub_chunks):
+                    pause_after = pause_chunk.pause_after_ms if idx == len(sub_chunks) - 1 else 0
+                    if sub_chunk.strip():
+                        tts_segments.append({
+                            "text": sub_chunk,
+                            "pause_after_ms": pause_after,
+                        })
+        else:
+            raw_chunks = split_text_into_chunks(text, Config.MAX_CHUNK_LENGTH)
+            tts_segments = [
+                {"text": chunk, "pause_after_ms": 0}
+                for chunk in raw_chunks
+                if chunk.strip()
+            ]
+
+        if not tts_segments:
+            update_tts_status(request_id, TTSStatus.ERROR, "No text segments available for generation")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": {
+                        "message": "No valid text segments found after processing pauses.",
+                        "type": "invalid_request_error",
+                    }
+                },
+            )
+
         voice_source = "uploaded file" if voice_sample_path != Config.VOICE_SAMPLE_PATH else "configured sample"
-        print(f"Processing {len(chunks)} text chunks with {voice_source} and parameters:")
+        print(f"Processing {len(tts_segments)} text segments with {voice_source} and parameters:")
         print(f"  - Exaggeration: {exaggeration}")
         print(f"  - CFG Weight: {cfg_weight}")
         print(f"  - Temperature: {temperature}")
-        
+
         # Update status with chunk information
-        update_tts_status(request_id, TTSStatus.GENERATING_AUDIO, "Starting audio generation", 
-                        current_chunk=0, total_chunks=len(chunks))
-        
+        update_tts_status(
+            request_id,
+            TTSStatus.GENERATING_AUDIO,
+            "Starting audio generation",
+            current_chunk=0,
+            total_chunks=len(tts_segments),
+        )
+
         # Generate audio for each chunk with memory management
         loop = asyncio.get_event_loop()
-        
-        for i, chunk in enumerate(chunks):
+
+        channels = None
+        dtype = None
+
+        for i, segment in enumerate(tts_segments):
+            chunk = segment["text"]
+            pause_after_ms = int(segment["pause_after_ms"])
             # Update progress
-            current_step = f"Generating audio for chunk {i+1}/{len(chunks)}"
-            update_tts_status(request_id, TTSStatus.GENERATING_AUDIO, current_step, 
-                            current_chunk=i+1, total_chunks=len(chunks))
-            
-            print(f"Generating audio for chunk {i+1}/{len(chunks)}: '{chunk[:50]}{'...' if len(chunk) > 50 else ''}'")
-            
+            current_step = f"Generating audio for chunk {i+1}/{len(tts_segments)}"
+            update_tts_status(
+                request_id,
+                TTSStatus.GENERATING_AUDIO,
+                current_step,
+                current_chunk=i + 1,
+                total_chunks=len(tts_segments),
+            )
+
+            print(f"Generating audio for chunk {i+1}/{len(tts_segments)}: '{chunk[:50]}{'...' if len(chunk) > 50 else ''}'")
+
             # Use torch.no_grad() to prevent gradient accumulation
             with torch.no_grad():
                 # Run TTS generation in executor to avoid blocking
@@ -251,7 +356,7 @@ async def generate_speech_internal(
                 }
                 
                 # Add language_id for multilingual models
-                if is_multilingual():
+                if is_multilingual(model_version):
                     generate_kwargs["language_id"] = language_id
                 
                 audio_tensor = await loop.run_in_executor(
@@ -263,8 +368,24 @@ async def generate_speech_internal(
                 if hasattr(audio_tensor, 'detach'):
                     audio_tensor = audio_tensor.detach()
                 
+                if audio_tensor.dim() == 1:
+                    audio_tensor = audio_tensor.unsqueeze(0)
+
                 audio_chunks.append(audio_tensor)
-            
+                assembled_segments.append(audio_tensor)
+
+                if channels is None:
+                    channels = audio_tensor.shape[0]
+                if dtype is None:
+                    dtype = audio_tensor.dtype
+
+                if pause_after_ms > 0 and channels is not None and dtype is not None:
+                    silence_samples = max(0, int(round((pause_after_ms / 1000.0) * model.sr)))
+                    if silence_samples > 0:
+                        silence_tensor = torch.zeros((channels, silence_samples), dtype=dtype, device=audio_tensor.device)
+                        assembled_segments.append(silence_tensor)
+                        silence_segments.append(silence_tensor)
+
             # Periodic memory cleanup during generation
             if i > 0 and i % 3 == 0:  # Every 3 chunks
                 import gc
@@ -273,13 +394,18 @@ async def generate_speech_internal(
                     torch.cuda.empty_cache()
         
         # Concatenate all chunks with memory management
-        if len(audio_chunks) > 1:
+        if len(assembled_segments) == 1:
+            final_audio = assembled_segments[0]
+        else:
             update_tts_status(request_id, TTSStatus.CONCATENATING, "Concatenating audio chunks")
             print("Concatenating audio chunks...")
             with torch.no_grad():
-                final_audio = concatenate_audio_chunks(audio_chunks, model.sr)
-        else:
-            final_audio = audio_chunks[0]
+                if resolved_enable_pauses:
+                    final_audio = assembled_segments[0]
+                    for segment in assembled_segments[1:]:
+                        final_audio = torch.cat([final_audio, segment.to(final_audio.device)], dim=1)
+                else:
+                    final_audio = concatenate_audio_chunks(audio_chunks, model.sr)
         
         # Convert to WAV format
         update_tts_status(request_id, TTSStatus.FINALIZING, "Converting to WAV format")
@@ -320,31 +446,36 @@ async def generate_speech_internal(
             # Clean up all audio chunks
             for chunk in audio_chunks:
                 safe_delete_tensors(chunk)
-            
+
+            for silence in silence_segments:
+                safe_delete_tensors(silence)
+
             # Clean up final audio tensor
             if final_audio is not None:
                 safe_delete_tensors(final_audio)
-                if 'final_audio_cpu' in locals():
-                    safe_delete_tensors(final_audio_cpu)
-            
+            if final_audio_cpu is not None:
+                safe_delete_tensors(final_audio_cpu)
+
             # Clear the list
             audio_chunks.clear()
-            
+            assembled_segments.clear()
+            silence_segments.clear()
+
             # Periodic memory cleanup
-            if REQUEST_COUNTER % Config.MEMORY_CLEANUP_INTERVAL == 0:
+            if current_request_count % Config.MEMORY_CLEANUP_INTERVAL == 0:
                 cleanup_memory()
-            
+
             # Log memory usage after processing
             if Config.ENABLE_MEMORY_MONITORING:
                 final_memory = get_memory_info()
-                print(f"📊 Request #{REQUEST_COUNTER} - Final memory: CPU {final_memory['cpu_memory_mb']:.1f}MB", end="")
+                print(f"📊 Request #{current_request_count} - Final memory: CPU {final_memory['cpu_memory_mb']:.1f}MB", end="")
                 if torch.cuda.is_available():
                     print(f", GPU {final_memory['gpu_memory_allocated_mb']:.1f}MB allocated")
                 else:
                     print()
                 
                 # Calculate memory difference
-                if 'initial_memory' in locals():
+                if initial_memory is not None:
                     cpu_diff = final_memory['cpu_memory_mb'] - initial_memory['cpu_memory_mb']
                     print(f"📈 Memory change: CPU {cpu_diff:+.1f}MB", end="")
                     if torch.cuda.is_available():
@@ -361,6 +492,7 @@ async def generate_speech_streaming(
     text: str,
     voice_sample_path: str,
     language_id: str = "en",
+    model_version: Optional[str] = None,
     exaggeration: Optional[float] = None,
     cfg_weight: Optional[float] = None,
     temperature: Optional[float] = None,
@@ -369,9 +501,11 @@ async def generate_speech_streaming(
     streaming_quality: Optional[str] = None
 ) -> AsyncGenerator[bytes, None]:
     """Streaming function to generate speech with real-time chunk yielding"""
-    global REQUEST_COUNTER
-    REQUEST_COUNTER += 1
-    
+    global REQUEST_COUNTER, REQUEST_COUNTER_LOCK
+    with REQUEST_COUNTER_LOCK:
+        REQUEST_COUNTER += 1
+        current_request_count = REQUEST_COUNTER
+
     # Start TTS request tracking
     voice_source = "uploaded file" if voice_sample_path != Config.VOICE_SAMPLE_PATH else "default"
     request_id = start_tts_request(
@@ -389,9 +523,21 @@ async def generate_speech_streaming(
         }
     )
     
-    update_tts_status(request_id, TTSStatus.INITIALIZING, "Checking model availability (streaming)")
-    
-    model = get_model()
+    update_tts_status(request_id, TTSStatus.INITIALIZING, "Loading model (streaming)")
+
+    # Map OpenAI model names to our model versions
+    if model_version in ["tts-1", "tts-1-hd"]:
+        model_version = None  # Use default
+
+    try:
+        model = await get_or_load_model(model_version)
+    except Exception as e:
+        update_tts_status(request_id, TTSStatus.ERROR, error_message=f"Failed to load model: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": {"message": f"Failed to load model: {str(e)}", "type": "model_error"}}
+        )
+
     if model is None:
         update_tts_status(request_id, TTSStatus.ERROR, error_message="Model not loaded")
         raise HTTPException(
@@ -400,12 +546,13 @@ async def generate_speech_streaming(
         )
 
     # Log memory usage before processing
+    # Initialize to None so it's always defined for the finally block
     initial_memory = None
     if Config.ENABLE_MEMORY_MONITORING:
         initial_memory = get_memory_info()
         update_tts_status(request_id, TTSStatus.INITIALIZING, "Monitoring initial memory (streaming)", 
                         memory_usage=initial_memory)
-        print(f"📊 Streaming Request #{REQUEST_COUNTER} - Initial memory: CPU {initial_memory['cpu_memory_mb']:.1f}MB", end="")
+        print(f"📊 Streaming Request #{current_request_count} - Initial memory: CPU {initial_memory['cpu_memory_mb']:.1f}MB", end="")
         if torch.cuda.is_available():
             print(f", GPU {initial_memory['gpu_memory_allocated_mb']:.1f}MB allocated")
         else:
@@ -484,34 +631,46 @@ async def generate_speech_streaming(
             # Use torch.no_grad() to prevent gradient accumulation
             with torch.no_grad():
                 # Run TTS generation in executor to avoid blocking
+                # Use a function factory to properly capture loop variables
+                def _generate_streaming_audio(text_chunk, voice_path, lang_id, exagg, cfg_w, temp):
+                    kwargs = {
+                        "text": text_chunk,
+                        "audio_prompt_path": voice_path,
+                        "exaggeration": exagg,
+                        "cfg_weight": cfg_w,
+                        "temperature": temp
+                    }
+                    if is_multilingual(model_version):
+                        kwargs["language_id"] = lang_id
+                    return model.generate(**kwargs)
+
                 audio_tensor = await loop.run_in_executor(
                     None,
-                    lambda: model.generate(
-                        text=chunk,
-                        audio_prompt_path=voice_sample_path,
-                        exaggeration=exaggeration,
-                        cfg_weight=cfg_weight,
-                        temperature=temperature,
-                        **({'language_id': language_id} if is_multilingual() else {})
-                    )
+                    _generate_streaming_audio,
+                    chunk, voice_sample_path, language_id, exaggeration, cfg_weight, temperature
                 )
-                
-                # Ensure tensor is on CPU for streaming
+
+                # Ensure tensor is on CPU for streaming (free GPU memory)
+                gpu_tensor = None
                 if hasattr(audio_tensor, 'cpu'):
-                    audio_tensor = audio_tensor.cpu()
+                    if audio_tensor.device.type != 'cpu':
+                        gpu_tensor = audio_tensor  # Keep reference to GPU tensor
+                        audio_tensor = audio_tensor.cpu()
 
                 # Convert tensor to raw 16-bit PCM data
                 # Clamp values to [-1, 1] before conversion
                 audio_tensor = torch.clamp(audio_tensor, -1.0, 1.0)
                 audio_tensor_int = (audio_tensor * 32767).to(torch.int16)
-                
+
                 # Yield the raw audio data as bytes
                 pcm_data = audio_tensor_int.numpy().tobytes()
                 yield pcm_data
-                
+
                 total_samples += audio_tensor.shape[1]
-                
-                # Clean up this chunk
+
+                # Clean up this chunk (including GPU tensor if it exists)
+                if gpu_tensor is not None:
+                    safe_delete_tensors(gpu_tensor)
                 safe_delete_tensors(audio_tensor, audio_tensor_int)
                 del pcm_data
             
@@ -542,13 +701,13 @@ async def generate_speech_streaming(
     
     finally:
         # Periodic memory cleanup
-        if REQUEST_COUNTER % Config.MEMORY_CLEANUP_INTERVAL == 0:
+        if current_request_count % Config.MEMORY_CLEANUP_INTERVAL == 0:
             cleanup_memory()
-        
+
         # Log memory usage after processing
         if Config.ENABLE_MEMORY_MONITORING:
             final_memory = get_memory_info()
-            print(f"📊 Streaming Request #{REQUEST_COUNTER} - Final memory: CPU {final_memory['cpu_memory_mb']:.1f}MB", end="")
+            print(f"📊 Streaming Request #{current_request_count} - Final memory: CPU {final_memory['cpu_memory_mb']:.1f}MB", end="")
             if torch.cuda.is_available():
                 print(f", GPU {final_memory['gpu_memory_allocated_mb']:.1f}MB allocated")
             else:
@@ -559,6 +718,7 @@ async def generate_speech_sse(
     text: str,
     voice_sample_path: str,
     language_id: str = "en",
+    model_version: Optional[str] = None,
     exaggeration: Optional[float] = None,
     cfg_weight: Optional[float] = None,
     temperature: Optional[float] = None,
@@ -567,9 +727,11 @@ async def generate_speech_sse(
     streaming_quality: Optional[str] = None
 ) -> AsyncGenerator[str, None]:
     """Generate Server-Side Events for speech streaming (OpenAI compatible format)"""
-    global REQUEST_COUNTER
-    REQUEST_COUNTER += 1
-    
+    global REQUEST_COUNTER, REQUEST_COUNTER_LOCK
+    with REQUEST_COUNTER_LOCK:
+        REQUEST_COUNTER += 1
+        current_request_count = REQUEST_COUNTER
+
     # Start TTS request tracking
     voice_source = "uploaded file" if voice_sample_path != Config.VOICE_SAMPLE_PATH else "default"
     request_id = start_tts_request(
@@ -588,9 +750,21 @@ async def generate_speech_sse(
         }
     )
     
-    update_tts_status(request_id, TTSStatus.INITIALIZING, "Checking model availability (SSE streaming)")
-    
-    model = get_model()
+    update_tts_status(request_id, TTSStatus.INITIALIZING, "Loading model (SSE streaming)")
+
+    # Map OpenAI model names to our model versions
+    if model_version in ["tts-1", "tts-1-hd"]:
+        model_version = None  # Use default
+
+    try:
+        model = await get_or_load_model(model_version)
+    except Exception as e:
+        update_tts_status(request_id, TTSStatus.ERROR, error_message=f"Failed to load model: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": {"message": f"Failed to load model: {str(e)}", "type": "model_error"}}
+        )
+
     if model is None:
         update_tts_status(request_id, TTSStatus.ERROR, error_message="Model not loaded")
         raise HTTPException(
@@ -599,12 +773,13 @@ async def generate_speech_sse(
         )
 
     # Log memory usage before processing
+    # Initialize to None so it's always defined for the finally block
     initial_memory = None
     if Config.ENABLE_MEMORY_MONITORING:
         initial_memory = get_memory_info()
         update_tts_status(request_id, TTSStatus.INITIALIZING, "Monitoring initial memory (SSE streaming)", 
                         memory_usage=initial_memory)
-        print(f"📊 SSE Request #{REQUEST_COUNTER} - Initial memory: CPU {initial_memory['cpu_memory_mb']:.1f}MB", end="")
+        print(f"📊 SSE Request #{current_request_count} - Initial memory: CPU {initial_memory['cpu_memory_mb']:.1f}MB", end="")
         if torch.cuda.is_available():
             print(f", GPU {initial_memory['gpu_memory_allocated_mb']:.1f}MB allocated")
         else:
@@ -683,44 +858,56 @@ async def generate_speech_sse(
                             current_chunk=i+1, total_chunks=len(chunks))
             
             print(f"SSE streaming audio for chunk {i+1}/{len(chunks)}: '{chunk[:50]}{'...' if len(chunk) > 50 else ''}'")
-            
+
             # Use torch.no_grad() to prevent gradient accumulation
             with torch.no_grad():
                 # Run TTS generation in executor to avoid blocking
+                # Use a function factory to properly capture loop variables
+                def _generate_sse_audio(text_chunk, voice_path, lang_id, exagg, cfg_w, temp):
+                    kwargs = {
+                        "text": text_chunk,
+                        "audio_prompt_path": voice_path,
+                        "exaggeration": exagg,
+                        "cfg_weight": cfg_w,
+                        "temperature": temp
+                    }
+                    if is_multilingual(model_version):
+                        kwargs["language_id"] = lang_id
+                    return model.generate(**kwargs)
+
                 audio_tensor = await loop.run_in_executor(
                     None,
-                    lambda: model.generate(
-                        text=chunk,
-                        audio_prompt_path=voice_sample_path,
-                        exaggeration=exaggeration,
-                        cfg_weight=cfg_weight,
-                        temperature=temperature,
-                        **({'language_id': language_id} if is_multilingual() else {})
-                    )
+                    _generate_sse_audio,
+                    chunk, voice_sample_path, language_id, exaggeration, cfg_weight, temperature
                 )
-                
-                # Ensure tensor is on CPU for processing
+
+                # Ensure tensor is on CPU for processing (free GPU memory)
+                gpu_tensor = None
                 if hasattr(audio_tensor, 'cpu'):
-                    audio_tensor = audio_tensor.cpu()
+                    if audio_tensor.device.type != 'cpu':
+                        gpu_tensor = audio_tensor  # Keep reference to GPU tensor
+                        audio_tensor = audio_tensor.cpu()
 
                 # Convert tensor to raw 16-bit PCM data
                 audio_tensor = torch.clamp(audio_tensor, -1.0, 1.0)
                 audio_tensor_int = (audio_tensor * 32767).to(torch.int16)
                 pcm_data = audio_tensor_int.numpy().tobytes()
-                
+
                 # Base64 encode the raw PCM data
                 audio_base64 = base64.b64encode(pcm_data).decode('utf-8')
-                
+
                 # Create SSE event for this audio chunk
                 sse_event = SSEAudioDelta(audio=audio_base64)
-                
+
                 # Format as SSE event
                 sse_data = f"data: {sse_event.model_dump_json()}\n\n"
                 yield sse_data
-                
+
                 total_audio_chunks += 1
-                
-                # Clean up this chunk
+
+                # Clean up this chunk (including GPU tensor if it exists)
+                if gpu_tensor is not None:
+                    safe_delete_tensors(gpu_tensor)
                 safe_delete_tensors(audio_tensor, audio_tensor_int)
                 del pcm_data
             
@@ -766,13 +953,13 @@ async def generate_speech_sse(
     
     finally:
         # Periodic memory cleanup
-        if REQUEST_COUNTER % Config.MEMORY_CLEANUP_INTERVAL == 0:
+        if current_request_count % Config.MEMORY_CLEANUP_INTERVAL == 0:
             cleanup_memory()
-        
+
         # Log memory usage after processing
         if Config.ENABLE_MEMORY_MONITORING:
             final_memory = get_memory_info()
-            print(f"📊 SSE Request #{REQUEST_COUNTER} - Final memory: CPU {final_memory['cpu_memory_mb']:.1f}MB", end="")
+            print(f"📊 SSE Request #{current_request_count} - Final memory: CPU {final_memory['cpu_memory_mb']:.1f}MB", end="")
             if torch.cuda.is_available():
                 print(f", GPU {final_memory['gpu_memory_allocated_mb']:.1f}MB allocated")
             else:
@@ -796,7 +983,11 @@ async def text_to_speech(request: TTSRequest):
     
     # Resolve voice name to file path and language
     voice_sample_path, language_id = resolve_voice_path_and_language(request.voice)
-    
+
+    enable_pauses = request.enable_pauses
+    if enable_pauses is None:
+        enable_pauses = Config.ENABLE_PUNCTUATION_PAUSES
+
     # Check if SSE streaming is requested
     if request.stream_format == "sse":
         # Return SSE streaming response
@@ -805,6 +996,7 @@ async def text_to_speech(request: TTSRequest):
                 text=request.input,
                 voice_sample_path=voice_sample_path,
                 language_id=language_id,
+                model_version=request.model,
                 exaggeration=request.exaggeration,
                 cfg_weight=request.cfg_weight,
                 temperature=request.temperature,
@@ -825,9 +1017,12 @@ async def text_to_speech(request: TTSRequest):
             text=request.input,
             voice_sample_path=voice_sample_path,
             language_id=language_id,
+            model_version=request.model,
             exaggeration=request.exaggeration,
             cfg_weight=request.cfg_weight,
-            temperature=request.temperature
+            temperature=request.temperature,
+            enable_pauses=enable_pauses,
+            custom_pauses=request.custom_pauses,
         )
         
         # Create response
@@ -853,6 +1048,7 @@ async def text_to_speech(request: TTSRequest):
 )
 async def text_to_speech_with_upload(
     input: str = Form(..., description="The text to generate audio for", min_length=1, max_length=3000),
+    model: Optional[str] = Form(None, description="Model version: chatterbox-v1, chatterbox-v2, chatterbox-multilingual-v1, chatterbox-multilingual-v2"),
     voice: Optional[str] = Form("alloy", description="Voice name from library or OpenAI voice name (defaults to configured sample)"),
     response_format: Optional[str] = Form("wav", description="Audio format (always returns WAV)"),
     speed: Optional[float] = Form(1.0, description="Speed of speech (ignored)"),
@@ -931,7 +1127,7 @@ async def text_to_speech_with_upload(
             if temp_voice_path and os.path.exists(temp_voice_path):
                 try:
                     os.unlink(temp_voice_path)
-                except:
+                except OSError:
                     pass
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -943,71 +1139,72 @@ async def text_to_speech_with_upload(
                 }
             )
     
-    try:
-        # Check if SSE streaming is requested
-        if stream_format == "sse":
-            # Create async generator that handles cleanup
-            async def sse_streaming_with_cleanup():
-                try:
-                    async for sse_event in generate_speech_sse(
-                        text=input,
-                        voice_sample_path=voice_sample_path,
-                        language_id=language_id,
-                        exaggeration=exaggeration,
-                        cfg_weight=cfg_weight,
-                        temperature=temperature,
-                        streaming_chunk_size=streaming_chunk_size,
-                        streaming_strategy=streaming_strategy,
-                        streaming_quality=streaming_quality
-                    ):
-                        yield sse_event
-                finally:
-                    # Clean up temporary voice file
-                    if temp_voice_path and os.path.exists(temp_voice_path):
-                        try:
-                            os.unlink(temp_voice_path)
-                            print(f"🗑️ Cleaned up temporary voice file: {temp_voice_path}")
-                        except Exception as e:
-                            print(f"⚠️ Warning: Failed to clean up temporary voice file: {e}")
-            
-            # Return SSE streaming response
-            return StreamingResponse(
-                sse_streaming_with_cleanup(),
-                media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no"  # Disable nginx buffering
-                }
-            )
-        else:
-            # Generate speech using internal function
+    # Check if SSE streaming is requested
+    if stream_format == "sse":
+        # Create async generator that handles cleanup
+        async def sse_streaming_with_cleanup():
+            try:
+                async for sse_event in generate_speech_sse(
+                    text=input,
+                    voice_sample_path=voice_sample_path,
+                    language_id=language_id,
+                    model_version=model,
+                    exaggeration=exaggeration,
+                    cfg_weight=cfg_weight,
+                    temperature=temperature,
+                    streaming_chunk_size=streaming_chunk_size,
+                    streaming_strategy=streaming_strategy,
+                    streaming_quality=streaming_quality
+                ):
+                    yield sse_event
+            finally:
+                # Clean up temporary voice file
+                if temp_voice_path and os.path.exists(temp_voice_path):
+                    try:
+                        os.unlink(temp_voice_path)
+                        print(f"🗑️ Cleaned up temporary voice file: {temp_voice_path}")
+                    except Exception as e:
+                        print(f"⚠️ Warning: Failed to clean up temporary voice file: {e}")
+
+        # Return SSE streaming response
+        return StreamingResponse(
+            sse_streaming_with_cleanup(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"  # Disable nginx buffering
+            }
+        )
+    else:
+        # Generate speech using internal function
+        try:
             buffer = await generate_speech_internal(
                 text=input,
                 voice_sample_path=voice_sample_path,
                 language_id=language_id,
+                model_version=model,
                 exaggeration=exaggeration,
                 cfg_weight=cfg_weight,
                 temperature=temperature
             )
-            
+
             # Create response
             response = StreamingResponse(
                 io.BytesIO(buffer.getvalue()),
                 media_type="audio/wav",
                 headers={"Content-Disposition": "attachment; filename=speech.wav"}
             )
-            
+
             return response
-        
-    finally:
-        # Clean up temporary voice file
-        if temp_voice_path and os.path.exists(temp_voice_path):
-            try:
-                os.unlink(temp_voice_path)
-                print(f"🗑️ Cleaned up temporary voice file: {temp_voice_path}")
-            except Exception as e:
-                print(f"⚠️ Warning: Failed to clean up temporary voice file: {e}")
+        finally:
+            # Clean up temporary voice file for non-streaming case
+            if temp_voice_path and os.path.exists(temp_voice_path):
+                try:
+                    os.unlink(temp_voice_path)
+                    print(f"🗑️ Cleaned up temporary voice file: {temp_voice_path}")
+                except Exception as e:
+                    print(f"⚠️ Warning: Failed to clean up temporary voice file: {e}")
 
 
 @router.post(
@@ -1034,6 +1231,7 @@ async def stream_text_to_speech(request: TTSRequest):
             text=request.input,
             voice_sample_path=voice_sample_path,
             language_id=language_id,
+            model_version=request.model,
             exaggeration=request.exaggeration,
             cfg_weight=request.cfg_weight,
             temperature=request.temperature,
@@ -1064,6 +1262,7 @@ async def stream_text_to_speech(request: TTSRequest):
 )
 async def stream_text_to_speech_with_upload(
     input: str = Form(..., description="The text to generate audio for", min_length=1, max_length=3000),
+    model: Optional[str] = Form(None, description="Model version: chatterbox-v1, chatterbox-v2, chatterbox-multilingual-v1, chatterbox-multilingual-v2"),
     voice: Optional[str] = Form("alloy", description="Voice name from library or OpenAI voice name (defaults to configured sample)"),
     response_format: Optional[str] = Form("wav", description="Audio format (always returns WAV)"),
     speed: Optional[float] = Form(1.0, description="Speed of speech (ignored)"),
@@ -1133,7 +1332,7 @@ async def stream_text_to_speech_with_upload(
             if temp_voice_path and os.path.exists(temp_voice_path):
                 try:
                     os.unlink(temp_voice_path)
-                except:
+                except OSError:
                     pass
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1152,6 +1351,7 @@ async def stream_text_to_speech_with_upload(
                 text=input,
                 voice_sample_path=voice_sample_path,
                 language_id=language_id,
+                model_version=model,
                 exaggeration=exaggeration,
                 cfg_weight=cfg_weight,
                 temperature=temperature,

@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import shutil
+import threading
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -35,6 +36,7 @@ class LongTextJobManager:
     def __init__(self):
         self.data_dir = Path(Config.LONG_TEXT_DATA_DIR)
         self.active_jobs: Dict[str, asyncio.Task] = {}
+        self.active_jobs_lock = threading.Lock()
         self.job_queue: asyncio.Queue = asyncio.Queue()
         self.processing_semaphore = asyncio.Semaphore(Config.LONG_TEXT_MAX_CONCURRENT_JOBS)
         self._ensure_data_directory()
@@ -158,14 +160,22 @@ class LongTextJobManager:
             logger.error(f"Failed to load input text for job {job_id}: {e}")
             return None
 
-    def create_job(self,
-                   text: str,
-                   voice: Optional[str] = None,
-                   output_format: str = "mp3",
-                   exaggeration: Optional[float] = None,
-                   cfg_weight: Optional[float] = None,
-                   temperature: Optional[float] = None,
-                   session_id: Optional[str] = None) -> Tuple[str, int]:
+    def create_job(
+        self,
+        text: str,
+        voice: Optional[str] = None,
+        output_format: str = "mp3",
+        exaggeration: Optional[float] = None,
+        cfg_weight: Optional[float] = None,
+        temperature: Optional[float] = None,
+        session_id: Optional[str] = None,
+        chunking_strategy: Optional[str] = None,
+        chunk_size: Optional[int] = None,
+        silence_padding: Optional[int] = None,
+        quality_preset: Optional[str] = None,
+        enable_pauses: Optional[bool] = None,
+        custom_pauses: Optional[Dict[str, int]] = None,
+    ) -> Tuple[str, int]:
         """
         Create a new long text job
 
@@ -178,8 +188,36 @@ class LongTextJobManager:
         # Calculate text hash for potential deduplication
         text_hash = self._generate_text_hash(text)
 
+        # Resolve chunking configuration
+        resolved_chunk_size = chunk_size or Config.LONG_TEXT_CHUNK_SIZE
+        if resolved_chunk_size <= 0:
+            resolved_chunk_size = Config.LONG_TEXT_CHUNK_SIZE
+
+        resolved_chunking_strategy = chunking_strategy or Config.LONG_TEXT_CHUNKING_STRATEGY
+        resolved_silence_padding = (
+            silence_padding
+            if silence_padding is not None and silence_padding >= 0
+            else Config.LONG_TEXT_SILENCE_PADDING_MS
+        )
+        resolved_quality_preset = quality_preset or Config.LONG_TEXT_QUALITY_PRESET
+
+        resolved_enable_pauses = (
+            Config.ENABLE_PUNCTUATION_PAUSES if enable_pauses is None else bool(enable_pauses)
+        )
+
+        resolved_custom_pauses = None
+        if custom_pauses:
+            resolved_custom_pauses = {}
+            for key, value in custom_pauses.items():
+                try:
+                    resolved_custom_pauses[str(key)] = int(value)
+                except (TypeError, ValueError):
+                    logger.debug("Ignoring invalid custom pause value %r=%r", key, value)
+            if not resolved_custom_pauses:
+                resolved_custom_pauses = None
+
         # Estimate number of chunks
-        estimated_chunks = max(1, (len(text) + Config.LONG_TEXT_CHUNK_SIZE - 1) // Config.LONG_TEXT_CHUNK_SIZE)
+        estimated_chunks = max(1, (len(text) + resolved_chunk_size - 1) // resolved_chunk_size)
 
         # Create job directories
         self._create_job_directories(job_id)
@@ -203,7 +241,15 @@ class LongTextJobManager:
                 'exaggeration': exaggeration,
                 'cfg_weight': cfg_weight,
                 'temperature': temperature,
-                'output_format': output_format
+                'output_format': output_format,
+                'chunking_strategy': resolved_chunking_strategy,
+                'chunk_size': resolved_chunk_size,
+                'quality_preset': resolved_quality_preset,
+                'silence_padding_ms': resolved_silence_padding,
+                'pause_settings': {
+                    'enable': resolved_enable_pauses,
+                    'custom': resolved_custom_pauses,
+                },
             },
             output_format=output_format,
             user_session_id=session_id
@@ -384,9 +430,9 @@ class LongTextJobManager:
 
             # Date filters
             comparison_date = metadata.completion_timestamp or metadata.created_at
-            if start_date and comparison_date < start_date:
+            if start_date and comparison_date and comparison_date < start_date:
                 continue
-            if end_date and comparison_date > end_date:
+            if end_date and comparison_date and comparison_date > end_date:
                 continue
 
             # Archive filter
@@ -554,10 +600,11 @@ class LongTextJobManager:
         if not metadata or metadata.status != LongTextJobStatus.PROCESSING:
             return False
 
-        # Cancel the processing task if it exists
-        if job_id in self.active_jobs:
-            self.active_jobs[job_id].cancel()
-            del self.active_jobs[job_id]
+        # Cancel the processing task if it exists (thread-safe)
+        with self.active_jobs_lock:
+            if job_id in self.active_jobs:
+                self.active_jobs[job_id].cancel()
+                del self.active_jobs[job_id]
 
         # Update metadata
         metadata.status = LongTextJobStatus.PAUSED
@@ -567,7 +614,7 @@ class LongTextJobManager:
         logger.info(f"Paused job {job_id}")
         return True
 
-    def resume_job(self, job_id: str) -> bool:
+    async def resume_job(self, job_id: str) -> bool:
         """Resume a paused job"""
         metadata = self._load_job_metadata(job_id)
         if not metadata or metadata.status != LongTextJobStatus.PAUSED:
@@ -579,7 +626,7 @@ class LongTextJobManager:
         self._save_job_metadata(metadata)
 
         # Add back to queue for processing
-        asyncio.create_task(self.job_queue.put(job_id))
+        await self.job_queue.put(job_id)
 
         logger.info(f"Resumed job {job_id}")
         return True
@@ -593,10 +640,11 @@ class LongTextJobManager:
         if metadata.status in [LongTextJobStatus.COMPLETED, LongTextJobStatus.FAILED]:
             return False
 
-        # Cancel the processing task if it exists
-        if job_id in self.active_jobs:
-            self.active_jobs[job_id].cancel()
-            del self.active_jobs[job_id]
+        # Cancel the processing task if it exists (thread-safe)
+        with self.active_jobs_lock:
+            if job_id in self.active_jobs:
+                self.active_jobs[job_id].cancel()
+                del self.active_jobs[job_id]
 
         # Update metadata
         metadata.status = LongTextJobStatus.CANCELLED
@@ -754,7 +802,13 @@ class LongTextJobManager:
             exaggeration=parameters.get('exaggeration'),
             cfg_weight=parameters.get('cfg_weight'),
             temperature=parameters.get('temperature'),
-            session_id=original_metadata.user_session_id
+            session_id=original_metadata.user_session_id,
+            chunking_strategy=parameters.get('chunking_strategy'),
+            chunk_size=parameters.get('chunk_size'),
+            silence_padding=parameters.get('silence_padding_ms'),
+            quality_preset=parameters.get('quality_preset'),
+            enable_pauses=(parameters.get('pause_settings') or {}).get('enable'),
+            custom_pauses=(parameters.get('pause_settings') or {}).get('custom'),
         )
 
         # Update metadata to link to original job

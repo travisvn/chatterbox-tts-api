@@ -1,9 +1,10 @@
 """
-Long text TTS endpoints for processing texts > 3000 characters
+Long text TTS endpoints for processing texts that exceed the configured minimum length
 """
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, status, Query
@@ -30,6 +31,7 @@ from app.models.long_text import (
 from app.config import Config
 from app.core.long_text_jobs import get_job_manager
 from app.core.background_tasks import get_processor
+from app.core.quality_presets import get_quality_preset
 from app.core.text_processing import validate_long_text_input, estimate_processing_time
 from app.core import add_route_aliases
 
@@ -37,13 +39,15 @@ from app.core import add_route_aliases
 base_router = APIRouter()
 router = add_route_aliases(base_router)
 
+logger = logging.getLogger(__name__)
+
 
 @router.post("/audio/speech/long", response_model=LongTextJobCreateResponse)
 async def create_long_text_job(request: LongTextRequest):
     """
     Submit a long text TTS job for background processing.
 
-    Text must be > 3000 characters to use this endpoint.
+    Text must exceed the configured minimum length to use this endpoint.
     For shorter texts, use /audio/speech instead.
     """
     try:
@@ -60,6 +64,17 @@ async def create_long_text_job(request: LongTextRequest):
                 }
             )
 
+        # Resolve quality and chunking configuration
+        preset_name = request.get_quality_preset()
+        preset_config = get_quality_preset(preset_name)
+
+        cfg_weight = request.cfg_weight if request.cfg_weight is not None else preset_config["cfg_weight"]
+        temperature = request.temperature if request.temperature is not None else preset_config["temperature"]
+        chunk_size = request.get_chunk_size(preset_config)
+        silence_padding = request.get_silence_padding()
+        chunking_strategy = request.get_chunking_strategy()
+        pause_settings = request.resolve_pause_settings()
+
         # Get job manager and processor
         job_manager = get_job_manager()
         processor = get_processor()
@@ -70,16 +85,22 @@ async def create_long_text_job(request: LongTextRequest):
             voice=request.voice,
             output_format=request.response_format or "mp3",
             exaggeration=request.exaggeration,
-            cfg_weight=request.cfg_weight,
-            temperature=request.temperature,
-            session_id=request.session_id
+            cfg_weight=cfg_weight,
+            temperature=temperature,
+            session_id=request.session_id,
+            chunking_strategy=chunking_strategy,
+            chunk_size=chunk_size,
+            silence_padding=silence_padding,
+            quality_preset=preset_name,
+            enable_pauses=pause_settings["enable"],
+            custom_pauses=pause_settings["custom"],
         )
 
         # Submit for background processing
         await processor.submit_job(job_id)
 
         # Estimate processing time
-        estimated_time = estimate_processing_time(len(request.input))
+        estimated_time = estimate_processing_time(len(request.input), chunk_size=chunk_size)
 
         return LongTextJobCreateResponse(
             job_id=job_id,
@@ -135,7 +156,7 @@ async def get_job_status(job_id: str):
 
         # Get job metadata and progress
         metadata = job_manager._load_job_metadata(job_id)
-        progress = await job_manager.get_progress(job_id)
+        progress = job_manager.get_progress(job_id)
 
         if not metadata or not progress:
             raise HTTPException(
@@ -256,7 +277,15 @@ async def download_job_audio(job_id: str):
             )
 
         # Determine media type based on format
-        media_type = "audio/mpeg" if metadata.output_format == "mp3" else "audio/wav"
+        SUPPORTED_FORMATS = {
+            "mp3": "audio/mpeg",
+            "wav": "audio/wav",
+            "flac": "audio/flac",
+            "ogg": "audio/ogg"
+        }
+        media_type = SUPPORTED_FORMATS.get(metadata.output_format, "audio/wav")
+        if metadata.output_format not in SUPPORTED_FORMATS:
+            logger.warning(f"Unknown format {metadata.output_format}, defaulting to wav")
 
         # Return file response
         return FileResponse(
@@ -441,13 +470,13 @@ async def cancel_job(job_id: str, action: LongTextJobActionType = Query(LongText
         if action == LongTextJobActionType.CANCEL:
             # Cancel the job (if running) and mark as cancelled
             await processor.pause_job(job_id)  # This cancels active processing
-            await job_manager.cancel_job(job_id)
+            job_manager.cancel_job(job_id)
             return {"message": f"Job {job_id} cancelled successfully"}
 
         elif action == LongTextJobActionType.DELETE:
             # Delete the job completely
             await processor.pause_job(job_id)  # Cancel if running
-            await job_manager.delete_job(job_id)
+            job_manager.delete_job(job_id)
             return {"message": f"Job {job_id} deleted successfully"}
 
         else:
@@ -762,7 +791,7 @@ async def get_job_details(job_id: str):
             error_log=[metadata.error] if metadata.error else [],
             performance_metrics={
                 "total_processing_time_ms": metadata.total_processing_time_ms,
-                "avg_chunk_time_ms": metadata.total_processing_time_ms / len(chunks) if chunks else 0,
+                "avg_chunk_time_ms": metadata.total_processing_time_ms / len(chunks) if len(chunks) > 0 else 0,
                 "success_rate": len([c for c in chunks if c.audio_file]) / len(chunks) if chunks else 0
             }
         )

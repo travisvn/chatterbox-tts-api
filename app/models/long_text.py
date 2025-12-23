@@ -4,9 +4,11 @@ Pydantic models for long text TTS operations
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Literal
 from pydantic import BaseModel, Field, field_validator
 from uuid import UUID
+
+from app.config import Config
 
 
 class LongTextJobStatus(str, Enum):
@@ -28,20 +30,116 @@ class LongTextJobActionType(str, Enum):
 
 class LongTextRequest(BaseModel):
     """Request model for long text TTS generation"""
-    input: str = Field(..., min_length=3001, description="Text to convert to speech (must be > 3000 characters)")
+    input: str = Field(
+        ..., description="Text to convert to speech (must meet the configured minimum length)"
+    )
     voice: Optional[str] = Field(None, description="Voice name from library or OpenAI voice name")
     response_format: Optional[str] = Field("mp3", description="Audio format (mp3 or wav)")
     exaggeration: Optional[float] = Field(None, ge=0.25, le=2.0, description="Emotion intensity")
     cfg_weight: Optional[float] = Field(None, ge=0.0, le=1.0, description="Pace control")
     temperature: Optional[float] = Field(None, ge=0.05, le=5.0, description="Sampling temperature")
     session_id: Optional[str] = Field(None, description="Frontend session ID for tracking")
+    chunking_strategy: Optional[Literal["sentence", "paragraph", "word", "fixed"]] = Field(
+        None, description="Strategy to use when chunking the text"
+    )
+    quality_preset: Optional[Literal["fast", "balanced", "high"]] = Field(
+        None, description="Quality preset balancing speed vs fidelity"
+    )
+    chunk_size: Optional[int] = Field(
+        None,
+        gt=0,
+        description="Custom chunk size override (takes precedence over presets and defaults)",
+    )
+    silence_padding_ms: Optional[int] = Field(
+        None,
+        ge=0,
+        description="Silence padding between chunks in milliseconds",
+    )
+    enable_pauses: Optional[bool] = Field(
+        None,
+        description="Enable punctuation-based pauses when generating chunk audio",
+    )
+    custom_pauses: Optional[Dict[str, int]] = Field(
+        None,
+        description="Custom pause patterns and durations in milliseconds",
+    )
 
     @field_validator('input')
     @classmethod
-    def validate_input_length(cls, v):
-        if len(v) > 100000:  # Will be validated against Config.LONG_TEXT_MAX_LENGTH at runtime
-            raise ValueError('Input text exceeds maximum length of 100000 characters')
-        return v.strip()
+    def validate_input_length(cls, v: str) -> str:
+        cleaned = v.strip()
+        text_length = len(cleaned)
+        min_length = Config.get_long_text_min_length()
+        max_length = Config.get_long_text_max_length()
+
+        if text_length < min_length:
+            raise ValueError(
+                f"Input text must be at least {min_length} characters for long text processing"
+            )
+
+        if text_length > max_length:
+            raise ValueError(
+                f"Input text exceeds maximum length of {max_length} characters"
+            )
+
+        return cleaned
+
+    def get_chunking_strategy(self) -> str:
+        """Return the requested chunking strategy with configuration fallback."""
+
+        return self.chunking_strategy or Config.LONG_TEXT_CHUNKING_STRATEGY
+
+    def get_quality_preset(self) -> str:
+        """Return the requested quality preset with configuration fallback."""
+
+        return self.quality_preset or Config.LONG_TEXT_QUALITY_PRESET
+
+    def get_chunk_size(self, preset_config: Dict[str, Any]) -> int:
+        """Resolve the chunk size using custom value, preset, then config."""
+
+        if self.chunk_size:
+            return self.chunk_size
+        return int(preset_config.get("chunk_size", Config.LONG_TEXT_CHUNK_SIZE))
+
+    def get_silence_padding(self) -> int:
+        """Resolve the silence padding with fallback to configuration."""
+
+        if self.silence_padding_ms is not None:
+            return self.silence_padding_ms
+        return Config.LONG_TEXT_SILENCE_PADDING_MS
+
+    def resolve_pause_settings(self) -> Dict[str, Any]:
+        """Return pause handling configuration with defaults applied."""
+
+        enable = (
+            self.enable_pauses
+            if self.enable_pauses is not None
+            else Config.ENABLE_PUNCTUATION_PAUSES
+        )
+        return {
+            "enable": bool(enable),
+            "custom": self.custom_pauses or None,
+        }
+
+    @field_validator('custom_pauses')
+    @classmethod
+    def validate_custom_pauses(cls, value: Optional[Dict[str, Any]]):
+        if value is None:
+            return value
+
+        cleaned: Dict[str, int] = {}
+        for key, duration in value.items():
+            if duration is None:
+                raise ValueError(f'Pause duration for {key!r} cannot be None')
+            try:
+                int_duration = int(duration)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f'Invalid pause duration for {key!r}: {duration!r}') from exc
+            if int_duration < 0:
+                raise ValueError(f'Pause duration for {key!r} must be non-negative')
+            cleaned[str(key)] = int_duration
+
+        return cleaned
 
 
 class LongTextChunk(BaseModel):
@@ -63,7 +161,7 @@ class LongTextJobMetadata(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     status: LongTextJobStatus = Field(default=LongTextJobStatus.PENDING)
-    text_length: int = Field(..., ge=3001, description="Total characters in input text")
+    text_length: int = Field(..., ge=1, description="Total characters in input text")
     text_hash: str = Field(..., description="SHA256 hash of input text for deduplication")
     total_chunks: int = Field(..., ge=1, description="Total number of chunks")
     completed_chunks: int = Field(default=0, ge=0, description="Number of completed chunks")

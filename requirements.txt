@@ -1,6 +1,8 @@
 # Chatterbox TTS Core Package with multilingual support
-# chatterbox-tts==0.1.4
-chatterbox-tts @ git+https://github.com/travisvn/chatterbox-multilingual.git@exp
+# V1: Fork with experimental features (keep for backward compatibility)
+# chatterbox-tts @ git+https://github.com/travisvn/chatterbox-multilingual.git@exp
+# V2: Official package with multilingual v2 updates
+chatterbox-tts==0.1.4
 
 # Required for Chatterbox TTS watermarker functionality
 resemble-perth
@@ -8,6 +10,12 @@ resemble-perth
 # PyTorch with CPU support (ensure CPU compatibility)
 torch>=2.0.0,<2.7.0
 torchaudio>=2.0.0,<2.7.0
+
+# HuggingFace Hub for downloading language-specific models
+huggingface-hub>=0.20.0
+
+# SafeTensors for loading .safetensors model files
+safetensors>=0.4.0
 
 # FastAPI and ASGI server
 fastapi>=0.104.0
@@ -30,4 +38,23 @@ psutil>=5.9.0
 pydub>=0.25.1
 
 # Testing Dependencies
-requests>=2.28.0 
+requests>=2.28.0
+
+# Additional TTS Engines (optional - will be lazy-loaded on first use)
+# IndexTTS-2: Install with `pip install indextts` and download models with:
+# hf download IndexTeam/IndexTTS-2 --local-dir=models/indextts/checkpoints
+# indextts; python_version>='3.10'
+
+# Higgs Audio V2: Install from source:
+# git clone https://github.com/boson-ai/higgs-audio && cd higgs-audio && pip install -e .
+# Note: Requires 24GB+ VRAM
+
+# VibeVoice: Install from community repository:
+# git clone https://github.com/vibevoice-community/VibeVoice.git && cd VibeVoice && pip install -e .
+# Models available on HuggingFace:
+#   - microsoft/VibeVoice-1.5B (64K context, ~90 min generation, ~3GB model, 8GB+ VRAM)
+#   - microsoft/VibeVoice-7B (32K context, ~45 min generation, ~14GB model, 16GB+ VRAM)
+# Note: Designed for long-form conversational speech synthesis with multi-speaker support
+
+# HuggingFace Hub for model downloads
+huggingface-hub>=0.20.0 

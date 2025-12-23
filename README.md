@@ -21,19 +21,20 @@
 
 ## Features
 
-🚀 **OpenAI-Compatible API** - Drop-in replacement for OpenAI's TTS API  
-⚡ **FastAPI Performance** - High-performance async API with automatic documentation  
-🌍 **Multilingual Support** - Generate speech in 22 languages with language-aware voice cloning  
-🎨 **React Frontend** - Includes an optional, ready-to-use web interface  
-🎭 **Voice Cloning** - Use your own voice samples for personalized speech  
-🎤 **Voice Library Management** - Upload, manage, and use custom voices by name  
-📝 **Smart Text Processing** - Automatic chunking for long texts  
-📊 **Real-time Status** - Monitor TTS progress, statistics, and request history  
-🐳 **Docker Ready** - Full containerization with persistent voice storage  
-⚙️ **Configurable** - Extensive environment variable configuration  
-🎛️ **Parameter Control** - Real-time adjustment of speech characteristics  
-📚 **Auto Documentation** - Interactive API docs at `/docs` and `/redoc`  
-🔧 **Type Safety** - Full Pydantic validation for requests and responses  
+🚀 **OpenAI-Compatible API** - Drop-in replacement for OpenAI's TTS API
+⚡ **FastAPI Performance** - High-performance async API with automatic documentation
+🌍 **Multilingual Support** - Generate speech in 22 languages with language-aware voice cloning
+🗣️ **Language-Specific Models** - Auto-download specialized models from HuggingFace for 12+ languages
+🎨 **React Frontend** - Includes an optional, ready-to-use web interface
+🎭 **Voice Cloning** - Use your own voice samples for personalized speech
+🎤 **Voice Library Management** - Upload, manage, and use custom voices by name
+📝 **Smart Text Processing** - Automatic chunking for long texts
+📊 **Real-time Status** - Monitor TTS progress, statistics, and request history
+🐳 **Docker Ready** - Full containerization with persistent voice storage
+⚙️ **Configurable** - Extensive environment variable configuration
+🎛️ **Parameter Control** - Real-time adjustment of speech characteristics
+📚 **Auto Documentation** - Interactive API docs at `/docs` and `/redoc`
+🔧 **Type Safety** - Full Pydantic validation for requests and responses
 🧠 **Memory Management** - Advanced memory monitoring and automatic cleanup
 
 > [!NOTE]
@@ -127,18 +128,18 @@ cp .env.example.docker .env  # Docker-specific paths, ready to use
 # Choose your deployment method:
 
 # API Only (default)
-docker compose -f docker/docker-compose.yml up -d             # Standard (pip-based)
-docker compose -f docker/docker-compose.uv.yml up -d          # uv-optimized (faster builds)
-docker compose -f docker/docker-compose.gpu.yml up -d         # Standard + GPU
-docker compose -f docker/docker-compose.uv.gpu.yml up -d      # uv + GPU (recommended for GPU users)
-docker compose -f docker/docker-compose.cpu.yml up -d         # CPU-only
-docker compose -f docker/docker-compose.blackwell.yml up -d   # Blackwell (50XX) NVIDIA GPUs
+docker compose -p tts-api -f docker/docker-compose.yml up -d             # Standard (pip-based)
+docker compose -p tts-api -f docker/docker-compose.uv.yml up -d          # uv-optimized (faster builds)
+docker compose -p tts-api -f docker/docker-compose.gpu.yml up -d         # Standard + GPU
+docker compose -p tts-api -f docker/docker-compose.uv.gpu.yml up -d      # uv + GPU (recommended for GPU users)
+docker compose -p tts-api -f docker/docker-compose.cpu.yml up -d         # CPU-only
+docker compose -p tts-api -f docker/docker-compose.blackwell.yml up -d   # Blackwell (50XX) NVIDIA GPUs
 
 # API + Frontend (add --profile frontend to any of the above)
-docker compose -f docker/docker-compose.yml --profile frontend up -d             # Standard + Frontend
-docker compose -f docker/docker-compose.gpu.yml --profile frontend up -d         # GPU + Frontend
-docker compose -f docker/docker-compose.uv.gpu.yml --profile frontend up -d      # uv + GPU + Frontend
-docker compose -f docker/docker-compose.blackwell.yml --profile frontend up -d   # (Blackwell) uv + GPU + Frontend
+docker compose -p tts-api -f docker/docker-compose.yml --profile frontend up -d             # Standard + Frontend
+docker compose -p tts-api -f docker/docker-compose.gpu.yml --profile frontend up -d         # GPU + Frontend
+docker compose -p tts-api -f docker/docker-compose.uv.gpu.yml --profile frontend up -d      # uv + GPU + Frontend
+docker compose -p tts-api -f docker/docker-compose.blackwell.yml --profile frontend up -d   # (Blackwell) uv + GPU + Frontend
 
 # Watch the logs as it initializes (the first use of TTS takes the longest)
 docker logs chatterbox-tts-api -f
@@ -217,6 +218,130 @@ The frontend uses a reverse proxy to route requests, so when running with `--pro
 </div>
 
 > 🖼️ View screenshot of full frontend web UI — [light mode](https://lm17s1uz51.ufs.sh/f/EsgO8cDHBTOUoONOy6UZv2m8CUjqGrBbDy4aXzNV9Rl1ZAgQ) / [dark mode](https://lm17s1uz51.ufs.sh/f/EsgO8cDHBTOU7RmQRTFVcR8ntzKQs0IxJ6ibFrq2hjCSadUG)
+
+## 🎯 Model Selection
+
+The API supports multiple Chatterbox TTS model versions, allowing you to choose the best model for your use case.
+
+### Available Models
+
+#### Base Models
+
+| Model ID | Type | Languages | Description |
+|----------|------|-----------|-------------|
+| `chatterbox-multilingual-v2` | Multilingual | 23 | Official ResembleAI package with v2 updates (default) |
+| `chatterbox-multilingual-v1` | Multilingual | 23 | Experimental fork with additional features |
+| `chatterbox-v2` | Standard | English | Official ResembleAI package, English-only |
+| `chatterbox-v1` | Standard | English | Experimental fork, English-only |
+| `tts-1` | Alias | Auto | OpenAI-compatible name (maps to default model) |
+| `tts-1-hd` | Alias | Auto | OpenAI-compatible name (maps to default model) |
+
+#### Language-Specific Models (NEW! 🌍)
+
+Language-specific models are now available with automatic download from HuggingFace! These models are trained specifically for individual languages and may provide better quality than the multilingual model.
+
+| Language | Model ID | HuggingFace Repo | Auto-Download |
+|----------|----------|------------------|---------------|
+| English | `chatterbox-en` | ResembleAI/chatterbox | ✅ |
+| German | `chatterbox-de` | stlohrey/chatterbox_de | ✅ |
+| German (havok2) | `chatterbox-de-havok2` | niobures/Chatterbox-TTS | ✅ |
+| German (SebastianBodza) | `chatterbox-de-SebastianBodza` | niobures/Chatterbox-TTS | ✅ |
+| French | `chatterbox-fr` | Thomcles/ChatterBox-fr | ✅ |
+| Italian | `chatterbox-it` | niobures/Chatterbox-TTS | ✅ |
+| Russian | `chatterbox-ru` | niobures/Chatterbox-TTS | ✅ |
+| Japanese | `chatterbox-ja` | niobures/Chatterbox-TTS | ✅ |
+| Korean | `chatterbox-ko` | niobures/Chatterbox-TTS | ✅ |
+| Norwegian | `chatterbox-no` | akhbar/chatterbox-tts-norwegian | ✅ |
+| Armenian | `chatterbox-hy` | niobures/Chatterbox-TTS | ✅ |
+| Georgian | `chatterbox-ka` | niobures/Chatterbox-TTS | ✅ |
+
+**New API Endpoints:**
+- `GET /languages` - List all supported languages with available models
+- `GET /languages/{language_code}/models` - Get models for a specific language
+- `GET /language-models` - List all language-specific models
+
+📖 **[Complete Language Models Documentation →](docs/LANGUAGE_MODELS.md)**
+
+### Model Selection Examples
+
+```bash
+# Use the default V2 multilingual model (recommended)
+curl -X POST http://localhost:4123/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input": "Hello world"}' \
+  --output speech.wav
+
+# Explicitly select V2 multilingual model
+curl -X POST http://localhost:4123/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input": "Hello world", "model": "chatterbox-multilingual-v2"}' \
+  --output speech.wav
+
+# Use V1 multilingual model (experimental features)
+curl -X POST http://localhost:4123/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input": "Hello world", "model": "chatterbox-multilingual-v1"}' \
+  --output speech.wav
+
+# Use English-only V2 model (faster, less memory)
+curl -X POST http://localhost:4123/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input": "Hello world", "model": "chatterbox-v2"}' \
+  --output speech.wav
+
+# OpenAI-compatible model name
+curl -X POST http://localhost:4123/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input": "Hello world", "model": "tts-1"}' \
+  --output speech.wav
+
+# Use German language-specific model (auto-downloads on first use)
+curl -X POST http://localhost:4123/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input": "Guten Tag! Wie geht es Ihnen?", "model": "chatterbox-de"}' \
+  --output german_speech.wav
+
+# Use French language-specific model
+curl -X POST http://localhost:4123/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input": "Bonjour! Comment allez-vous?", "model": "chatterbox-fr"}' \
+  --output french_speech.wav
+```
+
+### Configuration
+
+Set your default model in `.env`:
+
+```env
+# Enable multilingual support
+USE_MULTILINGUAL_MODEL=true
+
+# Choose default version (v1 or v2)
+DEFAULT_MODEL_VERSION=v2
+
+# Results in default model: chatterbox-multilingual-v2
+```
+
+### Model Features
+
+**V2 Models (Recommended):**
+- Official ResembleAI package (chatterbox-tts 0.1.4)
+- Latest multilingual improvements
+- Production-ready and well-tested
+- MIT licensed
+
+**V1 Models:**
+- Experimental fork with additional features
+- May include bleeding-edge improvements
+- Use for testing new capabilities
+
+### Lazy Loading
+
+Models are loaded on-demand to save memory:
+- Only the default model loads on startup
+- Other models load when first requested
+- All loaded models stay in memory for fast access
+- Check loaded models with `GET /models`
 
 ## API Usage
 

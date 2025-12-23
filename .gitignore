@@ -99,6 +99,7 @@ coverage.xml
 test_*
 
 !tests/test_*
+!unit_tests/test_*
 
 reference/
 CLAUDE.md

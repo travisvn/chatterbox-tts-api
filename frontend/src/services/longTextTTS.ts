@@ -47,6 +47,22 @@ export const createLongTextTTSService = (baseUrl: string, sessionId?: string) =>
         payload.response_format = request.output_format; // Backend expects 'response_format'
       }
 
+      if (request.silence_padding_ms !== undefined) {
+        payload.silence_padding_ms = request.silence_padding_ms;
+      }
+
+      if (request.chunking_strategy) {
+        payload.chunking_strategy = request.chunking_strategy;
+      }
+
+      if (request.quality_preset) {
+        payload.quality_preset = request.quality_preset;
+      }
+
+      if (request.chunk_size !== undefined) {
+        payload.chunk_size = request.chunk_size;
+      }
+
       // Add session ID for tracking
       if (sessionId) {
         payload.session_id = sessionId;

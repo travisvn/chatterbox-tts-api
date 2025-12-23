@@ -1,15 +1,15 @@
-"""
-Request models for API validation
-"""
+"""Request models for API validation"""
 
-from typing import Optional
+from typing import Dict, Optional
+
 from pydantic import BaseModel, Field, validator
 
 
 class TTSRequest(BaseModel):
     """Text-to-speech request model"""
-    
+
     input: str = Field(..., description="The text to generate audio for", min_length=1, max_length=3000)
+    model: Optional[str] = Field(None, description="Model version to use: chatterbox-v1, chatterbox-v2, chatterbox-multilingual-v1, chatterbox-multilingual-v2")
     voice: Optional[str] = Field("alloy", description="Voice to use (ignored - uses voice sample)")
     response_format: Optional[str] = Field("wav", description="Audio format (always returns WAV)")
     speed: Optional[float] = Field(1.0, description="Speed of speech (ignored)")
@@ -25,12 +25,37 @@ class TTSRequest(BaseModel):
     streaming_strategy: Optional[str] = Field(None, description="Chunking strategy for streaming")
     streaming_buffer_size: Optional[int] = Field(None, description="Number of chunks to buffer", ge=1, le=10)
     streaming_quality: Optional[str] = Field(None, description="Speed vs quality trade-off")
+
+    # Pause handling parameters
+    enable_pauses: Optional[bool] = Field(
+        None,
+        description="Enable punctuation-based pauses (defaults to server configuration)",
+    )
+    custom_pauses: Optional[Dict[str, int]] = Field(
+        None,
+        description="Custom pause durations in milliseconds keyed by punctuation",
+    )
     
     @validator('input')
     def validate_input(cls, v):
         if not v or not v.strip():
             raise ValueError('Input text cannot be empty')
         return v.strip()
+
+    @validator('model')
+    def validate_model(cls, v):
+        if v is not None:
+            allowed_models = [
+                'chatterbox-v1',
+                'chatterbox-v2',
+                'chatterbox-multilingual-v1',
+                'chatterbox-multilingual-v2',
+                'tts-1',  # OpenAI compatibility - maps to default
+                'tts-1-hd'  # OpenAI compatibility - maps to default
+            ]
+            if v not in allowed_models:
+                raise ValueError(f'model must be one of: {", ".join(allowed_models)}')
+        return v
     
     @validator('stream_format')
     def validate_stream_format(cls, v):
@@ -54,4 +79,23 @@ class TTSRequest(BaseModel):
             allowed_qualities = ['fast', 'balanced', 'high']
             if v not in allowed_qualities:
                 raise ValueError(f'streaming_quality must be one of: {", ".join(allowed_qualities)}')
-        return v 
+        return v
+
+    @validator('custom_pauses')
+    def validate_custom_pauses(cls, value):
+        if value is None:
+            return value
+
+        cleaned: Dict[str, int] = {}
+        for key, duration in value.items():
+            if duration is None:
+                raise ValueError('custom pause duration cannot be None')
+            try:
+                int_duration = int(duration)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f'invalid pause duration for {key!r}: {duration!r}') from exc
+            if int_duration < 0:
+                raise ValueError(f'pause duration for {key!r} must be non-negative')
+            cleaned[str(key)] = int_duration
+
+        return cleaned

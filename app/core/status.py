@@ -66,7 +66,7 @@ class TTSRequestInfo:
             self.memory_usage = {}
     
     @property
-    def duration_seconds(self) -> Optional[float]:
+    def duration_seconds(self) -> float:
         """Calculate request duration in seconds"""
         if self.end_time:
             return (self.end_time - self.start_time).total_seconds()
@@ -141,8 +141,9 @@ class TTSStatusManager:
                     elapsed = self._current_request.duration_seconds
                     estimated_total = (elapsed / current_chunk) * total_chunks
                     remaining = max(0, estimated_total - elapsed)
-                    self._current_request.progress.estimated_completion = (
-                        datetime.now(timezone.utc).timestamp() + remaining
+                    self._current_request.progress.estimated_completion = datetime.fromtimestamp(
+                        datetime.now(timezone.utc).timestamp() + remaining,
+                        tz=timezone.utc
                     )
             
             if memory_usage:

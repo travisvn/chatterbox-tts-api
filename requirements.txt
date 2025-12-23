@@ -30,4 +30,7 @@ psutil>=5.9.0
 pydub>=0.25.1
 
 # Testing Dependencies
-requests>=2.28.0 
+requests>=2.28.0
+
+# num2words library - Convert numbers to words in multiple languages
+num2words

@@ -1,0 +1,62 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/python
+{
+	"name": "Python GPU",
+	"hostRequirements": {"gpu": true},
+
+	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
+	"build": {
+		"dockerfile": "../../docker/Dockerfile.dev.gpu",
+		"context": "../.."
+	},
+
+	"runArgs": [
+		// provides access to nvidia GPU and drivers for podman; may vary for others.
+		"--device=nvidia.com/gpu=all"
+	],
+
+	// Binding just app/ would be most consistent with the way the Dockerfile is set up to run, but if we
+	// only mount app subdirectory, we don't have access to .git or .vscode in the project root.
+	// "workspaceMount": "type=bind,src=${localWorkspaceFolder}/app,target=/app/app",
+	// "workspaceFolder": "/app",
+
+	"mounts": [
+		"type=volume,src=chatterbox-models,target=/cache",
+		"type=volume,src=chatterbox-voices,target=/voices"
+	],
+
+	// Features to add to the dev container. More info: https://containers.dev/features.
+	"features": {
+		// Not required for app, but provides shell features and apps common to other devcontainers.
+		// "ghcr.io/devcontainers/features/common-utils:2": {}
+	},
+
+	// Use 'forwardPorts' to make a list of ports inside the container available locally.
+	"forwardPorts": [4123],
+	"portsAttributes": {
+		"4123": {
+			"label": "HTTP API"
+		}
+	},
+	// In this case, publish the API port to the network so other services can call it.
+	// "appPort": ["0.0.0.0:4123:4123"],
+
+	// Use 'postCreateCommand' to run commands after the container is created.
+	// "postCreateCommand": "pip3 install --user -r requirements.txt",
+
+	// Configure tool-specific properties.
+	"customizations": {
+		"jetbrains": {
+			"backend": "PyCharm"
+		},
+		"vscode": {
+			"extensions": [
+				"ms-python.python"
+			],
+			"settings": {
+				"python.defaultInterpreterPath": "/app/.venv/bin/python",
+				"python.terminal.activateEnvironment": true
+			}
+		}
+	}
+}

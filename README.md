@@ -36,6 +36,10 @@
 🔧 **Type Safety** - Full Pydantic validation for requests and responses  
 🧠 **Memory Management** - Advanced memory monitoring and automatic cleanup
 
+> [!NOTE]
+> _Support for Chatterbox Turbo coming soon_
+
+
 > [!IMPORTANT]
 > `resemble-ai/chatterbox` is currently broken for non-CUDA setups (see [chatterbox issues](https://github.com/resemble-ai/chatterbox/issues))
 > 

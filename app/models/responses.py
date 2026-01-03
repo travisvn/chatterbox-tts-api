@@ -6,13 +6,29 @@ from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
 
 
+class ParalinguisticTag(BaseModel):
+    tag: str
+    description: str
+
+
+class ModelCapabilities(BaseModel):
+    model_type: Optional[str] = None
+    supports_paralinguistic_tags: bool = False
+    supports_exaggeration: bool = True
+    supports_cfg_weight: bool = True
+    supports_temperature: bool = True
+    supported_languages: Dict[str, str] = {}
+    is_multilingual: bool = False
+    paralinguistic_tags: List[ParalinguisticTag] = []
+
+
 class HealthResponse(BaseModel):
-    """Health check response model"""
-    
     status: str
     model_loaded: bool
     device: str
     config: Dict[str, Any]
+    model_type: Optional[str] = None
+    model_capabilities: Optional[ModelCapabilities] = None
     memory_info: Optional[Dict[str, float]] = None
     initialization_state: Optional[str] = None
     initialization_progress: Optional[str] = None
@@ -21,7 +37,7 @@ class HealthResponse(BaseModel):
 
 class ModelInfo(BaseModel):
     """Individual model information"""
-    
+
     id: str
     object: str
     created: int
@@ -29,15 +45,15 @@ class ModelInfo(BaseModel):
 
 
 class ModelsResponse(BaseModel):
-    """Models listing response"""
-    
     object: str
     data: List[ModelInfo]
+    current_model: Optional[str] = None
+    capabilities: Optional[ModelCapabilities] = None
 
 
 class ConfigResponse(BaseModel):
     """Configuration response model"""
-    
+
     api_info: Dict[str, Any]
     server: Dict[str, Any]
     model: Dict[str, Any]
@@ -47,22 +63,22 @@ class ConfigResponse(BaseModel):
 
 class ErrorResponse(BaseModel):
     """Error response model"""
-    
+
     error: Dict[str, str]
 
 
 # SSE Response Models for OpenAI compatibility
 class SSEUsageInfo(BaseModel):
     """Usage information for SSE completion event"""
-    
+
     input_tokens: int
-    output_tokens: int  
+    output_tokens: int
     total_tokens: int
 
 
 class SSEAudioInfo(BaseModel):
     """SSE audio metadata event model"""
-    
+
     type: str = "speech.audio.info"
     sample_rate: int
     channels: int
@@ -71,21 +87,21 @@ class SSEAudioInfo(BaseModel):
 
 class SSEAudioDelta(BaseModel):
     """SSE audio delta event model"""
-    
+
     type: str = "speech.audio.delta"
     audio: str  # Base64 encoded audio chunk
 
 
 class SSEAudioDone(BaseModel):
     """SSE audio completion event model"""
-    
+
     type: str = "speech.audio.done"
     usage: SSEUsageInfo
 
 
 class TTSProgressResponse(BaseModel):
     """TTS progress response model"""
-    
+
     current_chunk: int
     total_chunks: int
     current_step: str
@@ -95,7 +111,7 @@ class TTSProgressResponse(BaseModel):
 
 class TTSStatusResponse(BaseModel):
     """TTS status response model"""
-    
+
     status: str
     is_processing: bool
     request_id: Optional[str] = None
@@ -114,7 +130,7 @@ class TTSStatusResponse(BaseModel):
 
 class TTSStatisticsResponse(BaseModel):
     """TTS statistics response model"""
-    
+
     total_requests: int
     completed_requests: int
     error_requests: int
@@ -126,7 +142,7 @@ class TTSStatisticsResponse(BaseModel):
 
 class APIInfoResponse(BaseModel):
     """API information response model"""
-    
+
     api_name: str
     version: str
     status: str
@@ -140,7 +156,7 @@ class APIInfoResponse(BaseModel):
 
 class VoiceLibraryItem(BaseModel):
     """Voice library item response model"""
-    
+
     name: str
     filename: str
     original_filename: str
@@ -155,21 +171,21 @@ class VoiceLibraryItem(BaseModel):
 
 class VoiceLibraryResponse(BaseModel):
     """Voice library listing response"""
-    
+
     voices: List[VoiceLibraryItem]
     count: int
 
 
 class SupportedLanguageItem(BaseModel):
     """Individual supported language information"""
-    
+
     code: str
     name: str
 
 
 class SupportedLanguagesResponse(BaseModel):
     """Supported languages response"""
-    
+
     languages: List[SupportedLanguageItem]
     count: int
     model_type: str
@@ -177,7 +193,7 @@ class SupportedLanguagesResponse(BaseModel):
 
 class DefaultVoiceResponse(BaseModel):
     """Default voice information response"""
-    
+
     default_voice: Optional[str]
     source: str
     voice_info: Optional[VoiceLibraryItem] = None

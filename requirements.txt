@@ -1,6 +1,6 @@
-# Chatterbox TTS Core Package with multilingual support
-# chatterbox-tts==0.1.4
-chatterbox-tts @ git+https://github.com/travisvn/chatterbox-multilingual.git@exp
+# Chatterbox TTS Core Package with Turbo and Multilingual support
+# Using jimihford/chatterbox fork with spacy-pkuseg made optional
+chatterbox-tts @ git+https://github.com/jimihford/chatterbox.git@spacy-pkuseg-optional
 
 # Required for Chatterbox TTS watermarker functionality
 resemble-perth

@@ -1,14 +1,14 @@
 [project]
 name = "chatterbox-tts-api"
-version = "2.1.0"
+version = "2.2.0"
 description = "REST API for Chatterbox TTS with OpenAI compatibility"
 authors = [{ name = "Travis Van Nimwegen", email = "tts@travis2.com" }]
 readme = "README.md"
 license = { text = "AGPLv3" }
 requires-python = ">=3.11, <3.12"
 dependencies = [
-  # "chatterbox-tts @ git+https://github.com/resemble-ai/chatterbox.git",
-  "chatterbox-tts @ git+https://github.com/travisvn/chatterbox-multilingual.git@exp",
+  # Chatterbox TTS with Turbo and Multilingual support (spacy-pkuseg made optional)
+  "chatterbox-tts @ git+https://github.com/jimihford/chatterbox.git@spacy-pkuseg-optional",
   "resemble-perth",
   "torch>=2.0.0,<2.7.0",
   "torchaudio>=2.0.0,<2.7.0",

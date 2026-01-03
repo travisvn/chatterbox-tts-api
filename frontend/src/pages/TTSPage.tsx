@@ -7,7 +7,8 @@ import {
   TextInput,
   AdvancedSettings,
   AudioPlayer,
-  LongTextHistory
+  LongTextHistory,
+  ParalinguisticTags
 } from '../components/tts';
 import VoiceLibrary from '../components/VoiceLibrary';
 import AudioHistory from '../components/AudioHistory';
@@ -31,7 +32,7 @@ import { useStreamingTTS } from '../hooks/useStreamingTTS';
 import { useLongTextTTS } from '../hooks/useLongTextTTS';
 import { useLongTextHistory } from '../hooks/useLongTextHistory';
 import { useHistoryTab } from '../hooks/useHistoryTab';
-import type { TTSRequest, LongTextRequest } from '../types';
+import type { TTSRequest, LongTextRequest, ModelCapabilities } from '../types';
 
 export default function TTSPage() {
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
@@ -208,7 +209,6 @@ export default function TTSPage() {
     retryDelay: 1000
   });
 
-  // Fetch API info (including version) periodically
   const { data: apiInfo } = useQuery({
     queryKey: ['apiInfo', apiBaseUrl],
     queryFn: async () => {
@@ -216,7 +216,15 @@ export default function TTSPage() {
       if (!response.ok) throw new Error('Failed to fetch API info');
       return response.json();
     },
-    refetchInterval: 60000, // Refresh every minute
+    refetchInterval: 60000,
+    retry: false
+  });
+
+  const { data: capabilities } = useQuery<ModelCapabilities>({
+    queryKey: ['capabilities', apiBaseUrl],
+    queryFn: ttsService.getCapabilities,
+    enabled: !!health?.model_loaded,
+    staleTime: 300000,
     retry: false
   });
 
@@ -562,6 +570,29 @@ export default function TTSPage() {
               </div>
             )}
 
+            {/* Paralinguistic Tags (Turbo model only) */}
+            {capabilities?.supports_paralinguistic_tags && capabilities.paralinguistic_tags.length > 0 && (
+              <ParalinguisticTags
+                tags={capabilities.paralinguistic_tags}
+                onInsertTag={(tag) => {
+                  const textarea = document.querySelector('textarea');
+                  if (textarea) {
+                    const start = textarea.selectionStart;
+                    const end = textarea.selectionEnd;
+                    const newText = text.slice(0, start) + tag + ' ' + text.slice(end);
+                    updateText(newText);
+                    setTimeout(() => {
+                      textarea.focus();
+                      textarea.setSelectionRange(start + tag.length + 1, start + tag.length + 1);
+                    }, 0);
+                  } else {
+                    updateText(text + (text.endsWith(' ') || !text ? '' : ' ') + tag + ' ');
+                  }
+                }}
+                disabled={isGenerating}
+              />
+            )}
+
             {/* Advanced Settings */}
             <AdvancedSettings
               showAdvanced={showAdvanced}
@@ -574,6 +605,7 @@ export default function TTSPage() {
               onTemperatureChange={updateTemperature}
               onResetToDefaults={resetToDefaults}
               isDefault={isDefault}
+              capabilities={capabilities}
             />
 
             {/* Current Voice Indicator */}

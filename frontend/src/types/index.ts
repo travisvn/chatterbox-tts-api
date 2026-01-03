@@ -24,6 +24,24 @@ export interface HealthResponse {
   initialization_state?: string;
   initialization_progress?: string;
   initialization_error?: string;
+  model_type?: 'standard' | 'multilingual' | 'turbo' | null;
+  model_capabilities?: ModelCapabilities;
+}
+
+export interface ParalinguisticTag {
+  tag: string;
+  description: string;
+}
+
+export interface ModelCapabilities {
+  model_type: 'standard' | 'multilingual' | 'turbo' | null;
+  supports_paralinguistic_tags: boolean;
+  supports_exaggeration: boolean;
+  supports_cfg_weight: boolean;
+  supports_temperature: boolean;
+  supported_languages: Record<string, string>;
+  is_multilingual: boolean;
+  paralinguistic_tags: ParalinguisticTag[];
 }
 
 // New status API types

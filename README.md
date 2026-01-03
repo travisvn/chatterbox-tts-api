@@ -34,11 +34,18 @@
 🎛️ **Parameter Control** - Real-time adjustment of speech characteristics  
 📚 **Auto Documentation** - Interactive API docs at `/docs` and `/redoc`  
 🔧 **Type Safety** - Full Pydantic validation for requests and responses  
-🧠 **Memory Management** - Advanced memory monitoring and automatic cleanup
+🧠 **Memory Management** - Advanced memory monitoring and automatic cleanup  
+🚄 **Turbo Model** - Fast 350M parameter model with paralinguistic tags (`[laugh]`, `[cough]`, etc.)
 
-> [!NOTE]
-> _Support for Chatterbox Turbo coming soon_
+## Model Zoo
 
+| Model | Size | Languages | Key Features | Best For |
+|-------|------|-----------|--------------|----------|
+| **Turbo** | 350M | English | Paralinguistic tags, lower VRAM, faster | Voice agents, production |
+| **Multilingual** | 500M | 23 | Zero-shot cloning, multiple languages | Global apps, localization |
+| **Standard** | 500M | English | CFG & exaggeration tuning | Creative controls |
+
+Set `TTS_MODEL_TYPE=turbo` or `TTS_MODEL_TYPE=multilingual` or `TTS_MODEL_TYPE=standard` to select.
 
 > [!IMPORTANT]
 > `resemble-ai/chatterbox` is currently broken for non-CUDA setups (see [chatterbox issues](https://github.com/resemble-ai/chatterbox/issues))
@@ -338,6 +345,48 @@ curl -X POST http://localhost:4123/v1/audio/speech \
 
 **📚 [Complete Multilingual Documentation →](docs/MULTILINGUAL.md)**
 
+## 🚄 Turbo Model
+
+The **Chatterbox Turbo** model is a faster, more efficient 350M parameter model optimized for voice agents and real-time applications.
+
+### Key Features
+
+- **Paralinguistic Tags** - Add emotions and sounds: `[laugh]`, `[cough]`, `[chuckle]`, `[sigh]`, `[gasp]`, `[clear throat]`
+- **Lower VRAM** - 350M parameters vs 500M for standard/multilingual models
+- **Faster Inference** - Optimized for production and real-time use
+
+### Quick Start
+
+```bash
+# Enable Turbo model (set in .env or environment)
+TTS_MODEL_TYPE=turbo
+
+# Use paralinguistic tags in text
+curl -X POST http://localhost:4123/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input": "That is hilarious [laugh] I cannot believe it!"}' \
+  --output laughing.wav
+
+# Get supported paralinguistic tags
+curl http://localhost:4123/paralinguistic-tags
+
+# Get model capabilities
+curl http://localhost:4123/capabilities
+```
+
+### Paralinguistic Tags
+
+| Tag | Description | Example |
+|-----|-------------|---------|
+| `[laugh]` | Full laughter | "That is hilarious [laugh]" |
+| `[chuckle]` | Light chuckle | "Sure thing [chuckle]" |
+| `[cough]` | Cough sound | "[cough] Excuse me" |
+| `[sigh]` | Sigh | "[sigh] If only..." |
+| `[gasp]` | Gasp of surprise | "[gasp] Really?!" |
+| `[clear throat]` | Throat clearing | "[clear throat] Ahem" |
+
+> **Note**: Paralinguistic tags are only supported by the Turbo model. The `exaggeration`, `cfg_weight`, and `temperature` parameters are ignored when using Turbo.
+
 ## 🎵 Real-time Audio Streaming
 
 The API supports multiple streaming formats for lower latency and better user experience:
@@ -590,10 +639,10 @@ Key environment variables (see the example files for full list):
 | Variable                 | Default              | Description                    |
 | ------------------------ | -------------------- | ------------------------------ |
 | `PORT`                   | `4123`               | API server port                |
-| `USE_MULTILINGUAL_MODEL` | `true`               | Enable 23-language support     |
-| `EXAGGERATION`           | `0.5`                | Emotion intensity (0.25-2.0)   |
-| `CFG_WEIGHT`             | `0.5`                | Pace control (0.0-1.0)         |
-| `TEMPERATURE`            | `0.8`                | Sampling randomness (0.05-5.0) |
+| `TTS_MODEL_TYPE`         | `multilingual`       | Model: standard, multilingual, turbo |
+| `EXAGGERATION`           | `0.5`                | Emotion intensity (0.25-2.0) - ignored for turbo |
+| `CFG_WEIGHT`             | `0.5`                | Pace control (0.0-1.0) - ignored for turbo |
+| `TEMPERATURE`            | `0.8`                | Sampling randomness (0.05-5.0) - ignored for turbo |
 | `VOICE_SAMPLE_PATH`      | `./voice-sample.mp3` | Voice sample for cloning       |
 | `DEVICE`                 | `auto`               | Device (auto/cuda/mps/cpu)     |
 

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AlertCircle, CheckCircle, Activity, Clock, Cpu, Settings, Star } from 'lucide-react';
+import { AlertCircle, CheckCircle, Activity, Clock, Cpu, Settings, Star, Zap, Globe, Mic } from 'lucide-react';
 import type { HealthResponse, TTSProgress, TTSStatistics, VoiceSample } from '../types';
 
 interface StatusHeaderProps {
@@ -109,6 +109,39 @@ export default function StatusHeader({
 
   const statusInfo = getStatusInfo();
 
+  const getModelBadge = () => {
+    if (!health?.model_loaded) return null;
+    
+    const modelType = health.model_type || health.model_capabilities?.model_type;
+    
+    if (!modelType) return null;
+
+    switch (modelType) {
+      case 'turbo':
+        return {
+          label: 'Turbo',
+          icon: <Zap className="w-3 h-3" />,
+          className: 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800'
+        };
+      case 'multilingual':
+        return {
+          label: 'Multilingual',
+          icon: <Globe className="w-3 h-3" />,
+          className: 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800'
+        };
+      case 'standard':
+        return {
+          label: 'Standard',
+          icon: <Mic className="w-3 h-3" />,
+          className: 'bg-gray-100 dark:bg-gray-800/40 text-gray-700 dark:text-gray-300 border-gray-200 dark:border-gray-700'
+        };
+      default:
+        return null;
+    }
+  };
+
+  const modelBadge = getModelBadge();
+
   const formatUptime = () => {
     if (!statistics) return null;
 
@@ -147,6 +180,15 @@ export default function StatusHeader({
           <span className="font-medium">{statusInfo.status}</span>
           <span>•</span>
           <span>{statusInfo.subtitle}</span>
+          {modelBadge && (
+            <>
+              <span>•</span>
+              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border ${modelBadge.className}`}>
+                {modelBadge.icon}
+                {modelBadge.label}
+              </span>
+            </>
+          )}
           {apiVersion && (
             <>
               <span>•</span>

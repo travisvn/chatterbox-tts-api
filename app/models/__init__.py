@@ -4,6 +4,8 @@ Pydantic models for request and response validation
 
 from .requests import TTSRequest
 from .responses import (
+    ParalinguisticTag,
+    ModelCapabilities,
     HealthResponse,
     ModelInfo,
     ModelsResponse,
@@ -21,7 +23,7 @@ from .responses import (
     VoiceLibraryResponse,
     SupportedLanguageItem,
     SupportedLanguagesResponse,
-    DefaultVoiceResponse
+    DefaultVoiceResponse,
 )
 from .long_text import (
     LongTextJobStatus,
@@ -34,11 +36,13 @@ from .long_text import (
     LongTextJobList,
     LongTextJobCreateResponse,
     LongTextJobAction,
-    LongTextSSEEvent
+    LongTextSSEEvent,
 )
 
 __all__ = [
     "TTSRequest",
+    "ParalinguisticTag",
+    "ModelCapabilities",
     "HealthResponse",
     "ModelInfo",
     "ModelsResponse",
@@ -67,5 +71,5 @@ __all__ = [
     "LongTextJobList",
     "LongTextJobCreateResponse",
     "LongTextJobAction",
-    "LongTextSSEEvent"
-] 
+    "LongTextSSEEvent",
+]

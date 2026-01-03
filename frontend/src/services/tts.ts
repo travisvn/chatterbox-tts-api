@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { TTSRequest, HealthResponse, VoiceLibraryResponse, DefaultVoiceResponse, VoiceLibraryItem, SSEEvent, StreamingProgress, SupportedLanguagesResponse } from '../types';
+import type { TTSRequest, HealthResponse, VoiceLibraryResponse, DefaultVoiceResponse, VoiceLibraryItem, SSEEvent, StreamingProgress, SupportedLanguagesResponse, ModelCapabilities, ParalinguisticTag } from '../types';
 
 export const createTTSService = (baseUrl: string, sessionId?: string) => ({
   generateSpeech: async (request: TTSRequest): Promise<Blob> => {
@@ -475,6 +475,22 @@ export const createTTSService = (baseUrl: string, sessionId?: string) => ({
     const params = includeAlerts ? '?include_alerts=true' : '';
     const response = await axios.get(`${baseUrl}/memory${params}`);
     return response.data;
+  },
+
+  getCapabilities: async (): Promise<ModelCapabilities> => {
+    const response = await fetch(`${baseUrl}/capabilities`);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch capabilities: ${response.status}`);
+    }
+    return response.json();
+  },
+
+  getParalinguisticTags: async (): Promise<{ tags: ParalinguisticTag[]; count: number }> => {
+    const response = await fetch(`${baseUrl}/paralinguistic-tags`);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch paralinguistic tags: ${response.status}`);
+    }
+    return response.json();
   },
 });
 

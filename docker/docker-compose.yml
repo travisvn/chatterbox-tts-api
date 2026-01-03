@@ -15,6 +15,8 @@ services:
       - HOST=${HOST:-0.0.0.0}
 
       # TTS Model Settings
+      # TTS_MODEL_TYPE: standard, multilingual (default), or turbo
+      - TTS_MODEL_TYPE=${TTS_MODEL_TYPE:-multilingual}
       - EXAGGERATION=${EXAGGERATION:-0.5}
       - CFG_WEIGHT=${CFG_WEIGHT:-0.5}
       - TEMPERATURE=${TEMPERATURE:-0.8}
@@ -41,6 +43,10 @@ services:
       - MEMORY_CLEANUP_INTERVAL=${MEMORY_CLEANUP_INTERVAL:-5}
       - CUDA_CACHE_CLEAR_INTERVAL=${CUDA_CACHE_CLEAR_INTERVAL:-3}
       - ENABLE_MEMORY_MONITORING=${ENABLE_MEMORY_MONITORING:-true}
+
+      # Hugging Face settings (token required for first model download)
+      - HF_TOKEN=${HF_TOKEN:-}
+      - HF_HOME=/cache/huggingface
 
     volumes:
       # Mount voice sample file (optional)

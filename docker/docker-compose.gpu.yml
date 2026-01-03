@@ -14,7 +14,8 @@ services:
       - PORT=${PORT:-4123}
       - HOST=${HOST:-0.0.0.0}
 
-      # TTS Model Settings
+      # TTS Model Settings (standard, multilingual, turbo)
+      - TTS_MODEL_TYPE=${TTS_MODEL_TYPE:-multilingual}
       - EXAGGERATION=${EXAGGERATION:-0.5}
       - CFG_WEIGHT=${CFG_WEIGHT:-0.5}
       - TEMPERATURE=${TEMPERATURE:-0.8}
@@ -40,6 +41,10 @@ services:
       # NVIDIA/CUDA settings
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+      # Hugging Face settings (token required for first model download)
+      - HF_TOKEN=${HF_TOKEN:-}
+      - HF_HOME=/cache/huggingface
     volumes:
       # Mount voice sample file (optional)
       - ${VOICE_SAMPLE_HOST_PATH:-../voice-sample.mp3}:/app/voice-sample.mp3:ro

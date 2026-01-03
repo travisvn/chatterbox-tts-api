@@ -43,8 +43,8 @@ RUN . .venv/bin/activate && python -c "import perth; print('✓ resemble-perth i
 # Install chatterbox-tts after ensuring perth is available
 # RUN uv pip install chatterbox-tts==1.0.4
 
-# Install chatterbox-tts — with the breaking fix (pkuseg package exclusion) 
-RUN uv pip install git+https://github.com/travisvn/chatterbox-multilingual.git@exp
+# Install chatterbox-tts with Turbo and Multilingual support (spacy-pkuseg made optional)
+RUN uv pip install git+https://github.com/jimihford/chatterbox.git@spacy-pkuseg-optional
 
 # Verify full installation
 RUN . .venv/bin/activate && python -c "import chatterbox; import perth; print('✓ All dependencies installed successfully')"

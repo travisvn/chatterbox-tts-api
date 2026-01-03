@@ -30,8 +30,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
 COPY requirements.txt ./
 RUN pip install --no-cache-dir fastapi uvicorn[standard] python-dotenv python-multipart requests psutil pydub sse-starlette
 
-# Install chatterbox-tts — with the breaking fix (pkuseg package exclusion) 
-RUN pip install git+https://github.com/travisvn/chatterbox-multilingual.git@exp
+# Install chatterbox-tts with Turbo and Multilingual support (spacy-pkuseg made optional)
+RUN pip install git+https://github.com/jimihford/chatterbox.git@spacy-pkuseg-optional
 
 # Copy application code
 COPY app/ ./app/

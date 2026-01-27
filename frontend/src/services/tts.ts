@@ -22,10 +22,6 @@ export const createTTSService = (baseUrl: string, sessionId?: string) => ({
       formData.append('temperature', request.temperature.toString());
     }
 
-    if (request.voice_file) {
-      formData.append('voice_file', request.voice_file);
-    }
-
     // Add session ID for tracking
     if (sessionId) {
       formData.append('session_id', sessionId);
@@ -152,10 +148,6 @@ export const createTTSService = (baseUrl: string, sessionId?: string) => ({
 
     if (request.temperature !== undefined) {
       formData.append('temperature', request.temperature.toString());
-    }
-
-    if (request.voice_file) {
-      formData.append('voice_file', request.voice_file);
     }
 
     if (request.streaming_chunk_size !== undefined) {

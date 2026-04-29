@@ -84,7 +84,8 @@ async def memory_management(
         "memory_info": memory_info,
         "request_counter": REQUEST_COUNTER,
         "cleanup_performed": False,
-        "cuda_cache_cleared": False
+        "cuda_cache_cleared": False,
+        "mps_cache_cleared": False
     }
     
     # Add memory alerts if requested
@@ -101,6 +102,10 @@ async def memory_management(
             # Clear CUDA cache if requested or if using GPU
             if torch.cuda.is_available() and force_cuda_clear:
                 result["cuda_cache_cleared"] = True
+                
+            # Clear MPS cache if requested or if using Apple Silicon GPU
+            if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available() and force_cuda_clear:
+                result["mps_cache_cleared"] = True
             
             # Get updated memory info after cleanup
             result["memory_info_after_cleanup"] = get_memory_info()
@@ -180,7 +185,8 @@ async def get_memory_config():
         "device_info": {
             "cuda_available": torch.cuda.is_available(),
             "cuda_device_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
-            "current_device": torch.cuda.current_device() if torch.cuda.is_available() else None
+            "current_device": torch.cuda.current_device() if torch.cuda.is_available() else None,
+            "mps_available": hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
         }
     }
 

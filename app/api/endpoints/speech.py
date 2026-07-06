@@ -238,6 +238,22 @@ async def generate_speech_internal(
             
             print(f"Generating audio for chunk {i+1}/{len(chunks)}: '{chunk[:50]}{'...' if len(chunk) > 50 else ''}'")
             
+            # Handle custom pause markers
+            if chunk.startswith("__PAUSE_MS:"):
+                try:
+                    ms_str = chunk.split(":")[1].replace("_", "")
+                    ms = int(ms_str)
+                    print(f"  - Inserting custom silence: {ms}ms")
+                    
+                    # Create silence tensor
+                    samples = int((ms / 1000.0) * model.sr)
+                    audio_tensor = torch.zeros(1, samples)
+                    audio_chunks.append(audio_tensor)
+                    continue
+                except (IndexError, ValueError):
+                    print(f"  - Warning: Failed to parse pause marker '{chunk}', skipping")
+                    continue
+
             # Use torch.no_grad() to prevent gradient accumulation
             with torch.no_grad():
                 # Run TTS generation in executor to avoid blocking

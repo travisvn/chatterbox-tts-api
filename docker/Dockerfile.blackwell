@@ -1,74 +1,80 @@
-# Use NVIDIA CUDA runtime as base for better GPU support
-FROM nvidia/cuda:12.8.1-runtime-ubuntu22.04
+# NVIDIA-optimized PyTorch for DGX Spark / GB10 (sm_121)
+FROM nvcr.io/nvidia/pytorch:26.01-py3
 
-# Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install Python 3.11 and system dependencies
-RUN apt-get update && apt-get install -y \
-    software-properties-common \
-    && add-apt-repository ppa:deadsnakes/ppa \
-    && apt-get update && apt-get install -y \
-    python3.11 \
-    python3.11-dev \
-    python3.11-distutils \
+# Install system dependencies; retain NVIDIA's supplied Python and PyTorch.
+RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
-    wget \
     curl \
     build-essential \
     ffmpeg \
     libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Set Python 3.11 as default
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
-RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
-
-# Install uv
+# Install uv, but do not create an isolated environment that hides
+# NVIDIA's preinstalled PyTorch.
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
-# Set working directory
 WORKDIR /app
 
-# Create virtual environment
-RUN uv venv --python 3.11
+# Keep app deps separate from NVIDIA's system python packages.
+# NVIDIA image includes compiled CUDA extensions linked against bundled
+# PyTorch bins. When different PyTorch versions clash it causes ABI
+# errors, undefined symbols, etc. during import.
+# DO NOT use --system-site-packages flag or replace NVIDIA system binaries
+# unless you validate compatibility with GPU and driver.
+RUN python3 -m venv /app/.venv
 
-# Activate the virtual environment for subsequent RUN commands
 ENV VIRTUAL_ENV=/app/.venv
-ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+ENV PATH="/app/.venv/bin:${PATH}"
 
-# Install PyTorch with CUDA support using uv
-# RUN uv pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu128
-RUN uv pip install torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 --index-url https://download.pytorch.org/whl/cu128
+# Restore pkg_resources for resemble-perth compatibility.
+RUN uv pip install "setuptools<81"
 
-# Install base dependencies first
-RUN uv pip install setuptools fastapi uvicorn[standard] python-dotenv python-multipart requests psutil pydub sse-starlette
+# Application and API dependencies.
+RUN uv pip install \
+    fastapi \
+    "uvicorn[standard]" \
+    python-dotenv \
+    python-multipart \
+    requests \
+    psutil \
+    pydub \
+    sse-starlette
 
-# Install resemble-perth specifically (required for watermarker)
-# RUN uv pip install resemble-perth
+# Chatterbox dependencies, excluding PyTorch.
+# NumPy 1.26.4 supports Python 3.12 and avoids the NumPy 2.x transition.
+RUN uv pip install \
+    numpy==1.26.4 \
+    librosa==0.11.0 \
+    s3tokenizer \
+    transformers==4.46.3 \
+    diffusers==0.29.0 \
+    resemble-perth==1.0.1 \
+    conformer==0.3.2 \
+    safetensors==0.5.3 \
+    pykakasi==2.3.0
 
-# Install chatterbox-tts using uv
-# RUN uv pip install chatterbox-tts==0.1.4
+# Install Chatterbox without resolving its dependencies.
+# Its upstream dependency declarations pin older PyTorch versions;
+# have to preserve NVIDIA's optimized PyTorch installation.
+RUN uv pip install --no-deps \
+    git+https://github.com/travisvn/chatterbox-multilingual.git@exp
 
-# Install chatterbox-tts — with the breaking fix (pkuseg package exclusion) 
-RUN uv pip install git+https://github.com/travisvn/chatterbox-multilingual.git@exp
-
-# Added after the install of chatterboxx-tts to hopefully be able to use 
-RUN uv pip install torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 --index-url https://download.pytorch.org/whl/cu128
-
-# Copy application code
+# Copy application code.
 COPY app/ ./app/
 COPY main.py ./
 
-# Copy voice sample if it exists (optional, can be mounted)
+# Optional fallback voice sample.
 COPY voice-sample.mp3 ./voice-sample.mp3
 
-# Create directories for model cache and voice library (separate from source code)
+# Create runtime directories.
 RUN mkdir -p /cache /voices /data/long_text_jobs
 
-# Set default environment variables (prefer CUDA)
+# API configuration.
 ENV PORT=4123
 ENV EXAGGERATION=0.5
 ENV CFG_WEIGHT=0.5
@@ -81,7 +87,7 @@ ENV MODEL_CACHE_DIR=/cache
 ENV VOICE_LIBRARY_DIR=/voices
 ENV HOST=0.0.0.0
 
-# Long text TTS settings
+# Long-text processing.
 ENV LONG_TEXT_DATA_DIR=/data/long_text_jobs
 ENV LONG_TEXT_MAX_LENGTH=100000
 ENV LONG_TEXT_CHUNK_SIZE=2500
@@ -89,16 +95,13 @@ ENV LONG_TEXT_SILENCE_PADDING_MS=200
 ENV LONG_TEXT_JOB_RETENTION_DAYS=7
 ENV LONG_TEXT_MAX_CONCURRENT_JOBS=3
 
-# NVIDIA/CUDA environment variables
+# NVIDIA container configuration.
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
-# Expose port
 EXPOSE ${PORT}
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5m --retries=3 \
     CMD curl -f http://localhost:${PORT}/health || exit 1
 
-# Run the application using the new entry point
-CMD ["python", "main.py"] 
+CMD ["python3", "main.py"]

@@ -281,17 +281,35 @@ async def generate_speech_internal(
         else:
             final_audio = audio_chunks[0]
         
-        # Convert to WAV format
+        # Convert to WAV format without TorchCodec
         update_tts_status(request_id, TTSStatus.FINALIZING, "Converting to WAV format")
-        buffer = io.BytesIO()
-        
-        # Ensure final_audio is on CPU for saving
-        if hasattr(final_audio, 'cpu'):
-            final_audio_cpu = final_audio.cpu()
+
+        import wave
+        import numpy as np
+
+        if hasattr(final_audio, "detach"):
+            audio_np = final_audio.detach().float().cpu().numpy()
         else:
-            final_audio_cpu = final_audio
-            
-        ta.save(buffer, final_audio_cpu, model.sr, format="wav")
+            audio_np = np.asarray(final_audio, dtype=np.float32)
+
+        # Chatterbox normally returns [channels, samples] or [samples].
+        audio_np = np.squeeze(audio_np)
+        if audio_np.ndim == 2:
+            audio_np = audio_np.T
+        elif audio_np.ndim != 1:
+            raise ValueError(f"Unexpected audio shape: {audio_np.shape}")
+
+        # Convert float audio to signed 16-bit PCM WAV.
+        audio_np = np.clip(audio_np, -1.0, 1.0)
+        pcm_audio = (audio_np * 32767.0).astype(np.int16)
+
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as wav_file:
+            wav_file.setnchannels(1 if pcm_audio.ndim == 1 else pcm_audio.shape[1])
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(model.sr)
+            wav_file.writeframes(pcm_audio.tobytes())
+
         buffer.seek(0)
         
         # Mark as completed
